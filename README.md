@@ -1,6 +1,6 @@
 # Ultimate DevOps MCP
 
-**One MCP server for your entire DevOps stack.** Give Claude, Cursor, or any MCP client operational access to Postgres, MongoDB, Neo4j, Elasticsearch, Kafka, Redis, Kubernetes, Grafana, Datadog, Prometheus, ArgoCD, GitLab and a headless browser — through a single production-ready endpoint.
+**One MCP server for your entire DevOps stack.** Give Claude, Cursor, or any MCP client operational access to Postgres, MongoDB, Neo4j, Elasticsearch, Kafka, Redis, Kubernetes, Grafana, Datadog, Prometheus, ArgoCD, GitLab, GitHub, Bitbucket and a headless browser — through a single production-ready endpoint.
 
 - **Latest MCP transport** — Streamable HTTP (spec `2025-03-26`+), stateful sessions, SSE streaming
 - **13 integrations, ~60 tools** — each activates automatically when its env vars are set
@@ -91,6 +91,8 @@ Everything is env-var driven; an integration is enabled **only** when its variab
 | Prometheus | `PROMETHEUS_URL` |
 | ArgoCD | `ARGOCD_URL`, `ARGOCD_TOKEN` |
 | GitLab | `GITLAB_TOKEN` (+ `GITLAB_URL` for self-hosted) |
+| GitHub | `GITHUB_TOKEN` (+ `GITHUB_API_URL` for GitHub Enterprise) |
+| Bitbucket | `BITBUCKET_TOKEN` **or** `BITBUCKET_USERNAME`+`BITBUCKET_APP_PASSWORD` (+ `BITBUCKET_WORKSPACE`) |
 | Playwright | `PLAYWRIGHT_ENABLED=true` (+ `npx playwright install chromium`) |
 
 **Server settings:** `MCP_AUTH_TOKEN` (bearer auth — set it in production), `MCP_ALLOW_WRITES` (default `false`), `MCP_HTTP_PORT` (8080), `MCP_RATE_LIMIT_PER_MINUTE` (300), `MCP_SESSION_IDLE_TIMEOUT_MINUTES` (30), `MCP_MAX_RESULT_CHARS` (50000), `MCP_TRUST_PROXY`, `LOG_LEVEL`.
@@ -114,6 +116,8 @@ Write tools (⚡) are registered **only** when `MCP_ALLOW_WRITES=true`.
 | **Prometheus** | `prom_query`, `prom_query_range`, `prom_alerts`, `prom_targets` |
 | **ArgoCD** | `argocd_list_applications`, `argocd_get_application`, `argocd_app_resources`, `argocd_app_history`, ⚡`argocd_sync_application` |
 | **GitLab** | `gitlab_list_projects`, `gitlab_list_pipelines`, `gitlab_pipeline_jobs`, `gitlab_job_log`, `gitlab_list_merge_requests`, `gitlab_get_merge_request`, ⚡`gitlab_trigger_pipeline`, ⚡`gitlab_retry_job` |
+| **GitHub** | `github_list_repos`, `github_list_pull_requests`, `github_get_pull_request`, `github_list_workflow_runs`, `github_workflow_run_jobs`, `github_list_issues`, `github_get_issue`, `github_list_commits`, ⚡`github_dispatch_workflow`, ⚡`github_rerun_workflow` |
+| **Bitbucket** | `bitbucket_list_repositories`, `bitbucket_list_pull_requests`, `bitbucket_get_pull_request`, `bitbucket_list_pipelines`, `bitbucket_get_pipeline`, ⚡`bitbucket_trigger_pipeline` |
 | **Browser** | `browser_navigate`, `browser_screenshot`, `browser_extract` |
 
 ## Example prompts

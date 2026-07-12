@@ -53,6 +53,15 @@ export interface GitlabConfig {
   url: string;
   token: string;
 }
+export interface GitHubConfig {
+  baseUrl: string;
+  token: string;
+}
+export interface BitbucketConfig {
+  baseUrl: string;
+  authHeader: string;
+  workspace?: string;
+}
 export interface PlaywrightConfig {
   noSandbox: boolean;
 }
@@ -80,6 +89,8 @@ export interface Integrations {
   prometheus?: PrometheusConfig;
   argocd?: ArgoCDConfig;
   gitlab?: GitlabConfig;
+  github?: GitHubConfig;
+  bitbucket?: BitbucketConfig;
   playwright?: PlaywrightConfig;
   temporal?: TemporalConfig;
 }
@@ -236,6 +247,33 @@ export function loadConfig(): AppConfig {
       url: (env("GITLAB_URL") ?? "https://gitlab.com").replace(/\/+$/, ""),
       token: gitlabToken,
     };
+  }
+
+  // --- GitHub (github.com or GHE; GITHUB_API_URL like https://ghe.co/api/v3) ---
+  const githubToken = env("GITHUB_TOKEN");
+  if (githubToken) {
+    integrations.github = {
+      baseUrl: (env("GITHUB_API_URL") ?? "https://api.github.com").replace(/\/+$/, ""),
+      token: githubToken,
+    };
+  }
+
+  // --- Bitbucket (Cloud API 2.0: access token, or username + app password) ---
+  const bbToken = env("BITBUCKET_TOKEN");
+  const bbUser = env("BITBUCKET_USERNAME");
+  const bbPass = env("BITBUCKET_APP_PASSWORD");
+  if (bbToken || (bbUser && bbPass)) {
+    integrations.bitbucket = {
+      baseUrl: (env("BITBUCKET_API_URL") ?? "https://api.bitbucket.org/2.0").replace(/\/+$/, ""),
+      authHeader: bbToken
+        ? `Bearer ${bbToken}`
+        : `Basic ${Buffer.from(`${bbUser}:${bbPass}`).toString("base64")}`,
+      workspace: env("BITBUCKET_WORKSPACE"),
+    };
+  } else if (bbUser || bbPass) {
+    errors.push(
+      "Bitbucket needs BITBUCKET_TOKEN, or BOTH BITBUCKET_USERNAME and BITBUCKET_APP_PASSWORD",
+    );
   }
 
   // --- Playwright ---

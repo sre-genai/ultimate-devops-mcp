@@ -13,6 +13,8 @@ import { registerDatadog } from "./integrations/datadog.js";
 import { registerPrometheus } from "./integrations/prometheus.js";
 import { registerArgoCD } from "./integrations/argocd.js";
 import { registerGitlab } from "./integrations/gitlab.js";
+import { registerGitHub } from "./integrations/github.js";
+import { registerBitbucket } from "./integrations/bitbucket.js";
 import { registerPlaywright } from "./integrations/playwright.js";
 import { registerTemporal } from "./integrations/temporal.js";
 
@@ -34,6 +36,8 @@ const REGISTRARS: Record<string, Registrar> = {
   prometheus: registerPrometheus,
   argocd: registerArgoCD,
   gitlab: registerGitlab,
+  github: registerGitHub,
+  bitbucket: registerBitbucket,
   playwright: registerPlaywright,
   temporal: registerTemporal,
 };
