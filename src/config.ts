@@ -2,6 +2,9 @@ import "dotenv/config";
 
 export interface PostgresConfig {
   connectionString: string;
+  /** Connecting through PgBouncer (transaction/statement pool mode): skip the
+   * server-side statement_timeout startup param it can reject. */
+  pgbouncer: boolean;
 }
 export interface MongoConfig {
   uri: string;
@@ -139,7 +142,7 @@ export function loadConfig(): AppConfig {
 
   // --- Postgres ---
   const pgUrl = env("POSTGRES_URL") ?? env("DATABASE_URL");
-  if (pgUrl) integrations.postgres = { connectionString: pgUrl };
+  if (pgUrl) integrations.postgres = { connectionString: pgUrl, pgbouncer: envBool("POSTGRES_PGBOUNCER") };
 
   // --- MongoDB ---
   const mongoUri = env("MONGODB_URI");
