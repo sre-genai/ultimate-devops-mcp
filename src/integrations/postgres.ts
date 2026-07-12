@@ -104,9 +104,12 @@ function buildDbFilter(allow?: string[]): ((name: string) => boolean) | null {
   const exact = new Set<string>();
   const regexes: RegExp[] = [];
   for (const entry of allow) {
-    if (entry.length >= 2 && entry.startsWith("/") && entry.endsWith("/")) {
+    // /pattern/ or /pattern/flags — substring match, e.g. /qa/ matches any name
+    // containing "qa"; /development/i is case-insensitive.
+    const m = /^\/(.+)\/([a-z]*)$/.exec(entry);
+    if (m) {
       try {
-        regexes.push(new RegExp(entry.slice(1, -1)));
+        regexes.push(new RegExp(m[1], m[2]));
         continue;
       } catch {
         /* invalid regex → fall through and treat as a literal name */
