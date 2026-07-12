@@ -60,6 +60,19 @@ claude mcp add devops --transport http http://localhost:8080/mcp \
 
 Then ask: *"Call devops_status"* — it lists which integrations this server has enabled.
 
+### Local / stdio
+
+For a purely local setup, run it over **stdio** — the client launches the process directly, no HTTP server, port, or auth needed (a stdio server is a single trusted local client). Logs go to stderr so they never corrupt the protocol on stdout.
+
+```bash
+# Claude Code — launch the built server over stdio, passing integration env:
+claude mcp add devops-local \
+  -e POSTGRES_URL=postgres://... -e REDIS_URL=redis://... \
+  -- node /path/to/ultimate-mcp/dist/stdio.js
+```
+
+Same tools and write-gating as HTTP mode; `npm run start:stdio` runs it directly. Use HTTP for a shared/remote deployment, stdio for a local single-user launch.
+
 ## Configuration
 
 Everything is env-var driven; an integration is enabled **only** when its variables are present. See [.env.example](.env.example) for the full annotated reference.

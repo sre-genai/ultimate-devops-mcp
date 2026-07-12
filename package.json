@@ -4,13 +4,19 @@
   "description": "Production-ready DevOps MCP server (Streamable HTTP) aggregating Grafana, Datadog, Prometheus, Neo4j, MongoDB, Postgres, Elasticsearch, Kafka, Redis and Playwright",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "ultimate-devops-mcp": "dist/index.js",
+    "ultimate-devops-mcp-stdio": "dist/stdio.js"
+  },
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/index.ts",
+    "dev:stdio": "tsx watch src/stdio.ts",
     "start": "node dist/index.js",
+    "start:stdio": "node dist/stdio.js",
     "test": "npm run build && node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
