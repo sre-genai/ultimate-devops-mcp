@@ -1,0 +1,68 @@
+services:
+  ultimate-devops-mcp:
+    build:
+      context: .
+      # For browser tools: args: { WITH_BROWSER: "true" }
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: 8080
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # -------------------------------------------------------------------------
+  # Optional local dev stack — uncomment what you need for testing.
+  # -------------------------------------------------------------------------
+  # postgres:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_PASSWORD: devops
+  #   ports: ["5432:5432"]
+  #
+  # redis:
+  #   image: redis:7-alpine
+  #   ports: ["6379:6379"]
+  #
+  # mongo:
+  #   image: mongo:7
+  #   ports: ["27017:27017"]
+  #
+  # neo4j:
+  #   image: neo4j:5
+  #   environment:
+  #     NEO4J_AUTH: neo4j/devopsdevops
+  #   ports: ["7474:7474", "7687:7687"]
+  #
+  # elasticsearch:
+  #   image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+  #   environment:
+  #     discovery.type: single-node
+  #     xpack.security.enabled: "false"
+  #     ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+  #   ports: ["9200:9200"]
+  #
+  # kafka:
+  #   image: bitnami/kafka:3.7
+  #   environment:
+  #     KAFKA_CFG_NODE_ID: 0
+  #     KAFKA_CFG_PROCESS_ROLES: controller,broker
+  #     KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+  #     KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+  #     KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  #     KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+  #   ports: ["9092:9092"]
+  #
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   ports: ["9090:9090"]
+  #
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   ports: ["3000:3000"]
