@@ -5,6 +5,9 @@ export interface PostgresConfig {
   /** Connecting through PgBouncer (transaction/statement pool mode): skip the
    * server-side statement_timeout startup param it can reject. */
   pgbouncer: boolean;
+  /** Optional allowlist of database names the tools may list/target. Each entry
+   * is either an exact name or a `/regex/`. Empty/undefined = all databases. */
+  dbAllow?: string[];
 }
 export interface MongoConfig {
   uri: string;
@@ -142,7 +145,17 @@ export function loadConfig(): AppConfig {
 
   // --- Postgres ---
   const pgUrl = env("POSTGRES_URL") ?? env("DATABASE_URL");
-  if (pgUrl) integrations.postgres = { connectionString: pgUrl, pgbouncer: envBool("POSTGRES_PGBOUNCER") };
+  if (pgUrl) {
+    const dbAllow = (env("POSTGRES_DB_ALLOW") ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    integrations.postgres = {
+      connectionString: pgUrl,
+      pgbouncer: envBool("POSTGRES_PGBOUNCER"),
+      dbAllow: dbAllow.length > 0 ? dbAllow : undefined,
+    };
+  }
 
   // --- MongoDB ---
   const mongoUri = env("MONGODB_URI");

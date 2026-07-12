@@ -97,6 +97,26 @@ function poolFor(cfg: PostgresConfig, database?: string): pg.Pool {
   return pool;
 }
 
+/** Build a database allow-matcher from config entries (exact names + /regex/).
+ * Returns null when no allowlist is configured (all databases permitted). */
+function buildDbFilter(allow?: string[]): ((name: string) => boolean) | null {
+  if (!allow || allow.length === 0) return null;
+  const exact = new Set<string>();
+  const regexes: RegExp[] = [];
+  for (const entry of allow) {
+    if (entry.length >= 2 && entry.startsWith("/") && entry.endsWith("/")) {
+      try {
+        regexes.push(new RegExp(entry.slice(1, -1)));
+        continue;
+      } catch {
+        /* invalid regex → fall through and treat as a literal name */
+      }
+    }
+    exact.add(entry);
+  }
+  return (name: string) => exact.has(name) || regexes.some((r) => r.test(name));
+}
+
 const READ_ONLY_RE = /^\s*(select|with|explain|show|values|table)\b/i;
 const DEFAULT_ROW_LIMIT = 200;
 const DB_ARG = z
@@ -109,6 +129,20 @@ const DB_ARG = z
 export function registerPostgres(server: McpServer, config: AppConfig): boolean {
   const cfg = config.integrations.postgres;
   if (!cfg) return false;
+
+  const dbFilter = buildDbFilter(cfg.dbAllow);
+  // Resolve a pool for an explicit target database, rejecting any name outside
+  // the allowlist so the agent can't reach a DB just by guessing its name. The
+  // default DB (no `database` arg) is the operator's own configured connection
+  // and is always permitted.
+  const targetPool = (database?: string) => {
+    if (database !== undefined && dbFilter && !dbFilter(database)) {
+      throw new Error(
+        `database ${JSON.stringify(database)} is not in the allowed set (POSTGRES_DB_ALLOW)`,
+      );
+    }
+    return poolFor(cfg, database);
+  };
 
   server.registerTool(
     "postgres_list_databases",
@@ -130,7 +164,10 @@ export function registerPostgres(server: McpServer, config: AppConfig): boolean 
          WHERE NOT d.datistemplate AND d.datallowconn
          ORDER BY d.datname`,
       );
-      return jsonResult({ count: res.rows.length, databases: res.rows });
+      const databases = dbFilter
+        ? res.rows.filter((r: { name: string }) => dbFilter(r.name))
+        : res.rows;
+      return jsonResult({ count: databases.length, databases });
     }),
   );
 
@@ -163,7 +200,7 @@ export function registerPostgres(server: McpServer, config: AppConfig): boolean 
           "Only read-only statements (SELECT/WITH/EXPLAIN/SHOW/VALUES/TABLE) are allowed here. Use postgres_execute for writes (requires MCP_ALLOW_WRITES=true).",
         );
       }
-      const client = await poolFor(cfg, database).connect();
+      const client = await targetPool(database).connect();
       try {
         await client.query("BEGIN TRANSACTION READ ONLY");
         const res = await client.query(sql, params ?? []);
@@ -198,7 +235,7 @@ export function registerPostgres(server: McpServer, config: AppConfig): boolean 
       annotations: { readOnlyHint: true },
     },
     safe("postgres_list_tables", async ({ schema, database }) => {
-      const res = await poolFor(cfg, database).query(
+      const res = await targetPool(database).query(
         `SELECT n.nspname AS schema, c.relname AS name,
                 CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view'
                                WHEN 'm' THEN 'materialized view' WHEN 'p' THEN 'partitioned table' END AS type,
@@ -230,7 +267,7 @@ export function registerPostgres(server: McpServer, config: AppConfig): boolean 
     },
     safe("postgres_describe_table", async ({ table, schema, database }) => {
       const sch = schema ?? "public";
-      const p = poolFor(cfg, database);
+      const p = targetPool(database);
       const [columns, indexes] = await Promise.all([
         p.query(
           `SELECT column_name, data_type, is_nullable, column_default
@@ -269,7 +306,7 @@ export function registerPostgres(server: McpServer, config: AppConfig): boolean 
         annotations: { destructiveHint: true },
       },
       safe("postgres_execute", async ({ sql, params, database }) => {
-        const res = await poolFor(cfg, database).query(sql, params ?? []);
+        const res = await targetPool(database).query(sql, params ?? []);
         return jsonResult({
           database: database ?? "(default)",
           command: res.command,
