@@ -151,6 +151,25 @@ export function registerMongo(server: McpServer, config: AppConfig): boolean {
   );
 
   server.registerTool(
+    "mongo_list_databases",
+    {
+      title: "List MongoDB databases",
+      description:
+        "Lists the databases on the server (name, size on disk, empty flag). Use a returned name as the `database` argument to the other Mongo tools.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    safe("mongo_list_databases", async () => {
+      const c = await getClient(cfg.uri);
+      const { databases } = await c.db().admin().listDatabases();
+      return jsonResult({
+        count: databases.length,
+        databases: databases.map((d) => ({ name: d.name, sizeOnDisk: d.sizeOnDisk, empty: d.empty })),
+      });
+    }),
+  );
+
+  server.registerTool(
     "mongo_count",
     {
       title: "Count MongoDB documents",

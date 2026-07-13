@@ -16,8 +16,28 @@ export function textResult(text: string): CallToolResult {
   return { content: [{ type: "text", text: truncate(text) }] };
 }
 
+/** Cap any single string field before serialization so one giant value (e.g. a
+ * hostile `SELECT repeat('x', 5e8)` or a huge `redis_get`) can't balloon memory
+ * during JSON.stringify. Bounds per-field to maxResultChars; the whole payload is
+ * still truncated by `truncate()` afterwards. NOTE: the backend still materializes
+ * the value at fetch — bound queries with row/size limits for true safety. */
+function capFields(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.length > maxResultChars
+      ? `${value.slice(0, maxResultChars)}…[field truncated]`
+      : value;
+  }
+  if (Array.isArray(value)) return value.map(capFields);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) out[k] = capFields(v);
+    return out;
+  }
+  return value;
+}
+
 export function jsonResult(value: unknown): CallToolResult {
-  return textResult(JSON.stringify(value, jsonReplacer, 2));
+  return textResult(JSON.stringify(capFields(value), jsonReplacer, 2));
 }
 
 export function imageResult(base64: string, mimeType: string, caption?: string): CallToolResult {

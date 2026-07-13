@@ -105,7 +105,7 @@ Write tools (⚡) are registered **only** when `MCP_ALLOW_WRITES=true`.
 |---|---|
 | **Meta** | `devops_status` |
 | **Postgres** | `postgres_list_databases`, `postgres_query` (read-only tx), `postgres_list_tables`, `postgres_describe_table`, ⚡`postgres_execute` — all but `list_databases` take an optional `database` to target any DB on the instance |
-| **MongoDB** | `mongo_find`, `mongo_aggregate`, `mongo_list_collections`, `mongo_count`, ⚡`mongo_insert`, ⚡`mongo_update` |
+| **MongoDB** | `mongo_list_databases`, `mongo_list_collections`, `mongo_find`, `mongo_aggregate`, `mongo_count`, ⚡`mongo_insert`, ⚡`mongo_update` |
 | **Neo4j** | `neo4j_read_cypher`, `neo4j_schema`, ⚡`neo4j_write_cypher` |
 | **Elasticsearch** | `es_search`, `es_list_indices`, `es_cluster_health`, `es_get_document` |
 | **Kafka** | `kafka_list_topics`, `kafka_describe_topic`, `kafka_consumer_groups`, `kafka_consumer_lag`, `kafka_tail`, ⚡`kafka_produce` |
