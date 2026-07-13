@@ -34,6 +34,10 @@ COPY --from=build /app/dist ./dist
 USER node
 EXPOSE 8080
 ENV MCP_HTTP_PORT=8080
+# The server defaults to loopback; inside a container binding all interfaces is
+# correct (the container boundary + published ports are the perimeter — still
+# front it with MCP_AUTH_TOKEN and network policy).
+ENV MCP_HTTP_HOST=0.0.0.0
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.MCP_HTTP_PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 

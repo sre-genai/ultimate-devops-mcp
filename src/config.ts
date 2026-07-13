@@ -322,7 +322,11 @@ export function loadConfig(): AppConfig {
   }
 
   return {
-    host: env("MCP_HTTP_HOST") ?? "0.0.0.0",
+    // Bind loopback by default so the server isn't network-exposed out of the
+    // box (it holds real integration credentials + is unauthenticated unless
+    // MCP_AUTH_TOKEN is set). Set MCP_HTTP_HOST=0.0.0.0 to expose it deliberately
+    // (only behind auth + network policy; the Docker image sets it explicitly).
+    host: env("MCP_HTTP_HOST") ?? "127.0.0.1",
     port: envInt("MCP_HTTP_PORT", 8080),
     authToken: env("MCP_AUTH_TOKEN"),
     allowWrites: envBool("MCP_ALLOW_WRITES"),
