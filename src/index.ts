@@ -12,8 +12,18 @@ const config = loadConfig();
 setMaxResultChars(config.maxResultChars);
 
 if (!config.authToken) {
+  const loopback = ["127.0.0.1", "::1", "localhost"].includes(config.host);
+  if (!loopback && process.env.MCP_INSECURE !== "1") {
+    logger.fatal(
+      `Refusing to start: MCP_HTTP_HOST=${config.host} exposes the server on the network, but ` +
+        `MCP_AUTH_TOKEN is not set — that would leave every integration's production credentials ` +
+        `open to any reachable client. Set MCP_AUTH_TOKEN, bind loopback, or set MCP_INSECURE=1 to override.`,
+    );
+    process.exit(1);
+  }
   logger.warn(
-    "MCP_AUTH_TOKEN is not set — the /mcp endpoint is UNAUTHENTICATED. Set MCP_AUTH_TOKEN in production.",
+    "MCP_AUTH_TOKEN is not set — the /mcp endpoint is UNAUTHENTICATED (bound to a local interface). " +
+      "Set MCP_AUTH_TOKEN before exposing it.",
   );
 }
 
@@ -65,7 +75,8 @@ app.get("/readyz", (_req, res) => {
     server: SERVER_NAME,
     version: SERVER_VERSION,
     sessions: sessions.size,
-    integrations: enabledIntegrationNames(config),
+    // Count only — don't enumerate which backends are wired to unauth callers.
+    integrations: enabledIntegrationNames(config).length,
   });
 });
 
@@ -102,7 +113,36 @@ const limiter = rateLimit({
   message: { jsonrpc: "2.0", error: { code: -32000, message: "Rate limit exceeded" }, id: null },
 });
 
-app.use("/mcp", limiter, authenticate);
+// DNS-rebinding protection: a browser fetch always sends an Origin header, so a
+// malicious page that rebinds DNS to this server's IP would carry its own
+// origin. Reject any present, non-loopback Origin (unless explicitly allowed
+// via MCP_ALLOWED_ORIGINS). A missing Origin = a non-browser MCP client, allowed.
+const extraOrigins = (process.env.MCP_ALLOWED_ORIGINS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+function originAllowed(origin: string | undefined): boolean {
+  if (!origin) return true;
+  if (extraOrigins.includes(origin)) return true;
+  try {
+    return ["localhost", "127.0.0.1", "::1"].includes(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+function checkOrigin(req: Request, res: Response, next: NextFunction): void {
+  if (originAllowed(req.headers.origin)) {
+    next();
+    return;
+  }
+  res.status(403).json({
+    jsonrpc: "2.0",
+    error: { code: -32003, message: "Forbidden: cross-origin request rejected (DNS-rebinding protection)" },
+    id: null,
+  });
+}
+
+app.use("/mcp", checkOrigin, limiter, authenticate);
 
 // ---------------------------------------------------------------------------
 // Streamable HTTP transport (MCP spec 2025-03-26+)

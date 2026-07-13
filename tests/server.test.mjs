@@ -86,15 +86,30 @@ after(() => {
 test("healthz and readyz report status and integrations", async () => {
   const ready = await (await fetch(`${BASE}/readyz`)).json();
   assert.equal(ready.status, "ok");
-  assert.deepEqual(
-    [...ready.integrations].sort(),
-    ["gitlab", "postgres", "prometheus", "redis"],
-  );
+  // /readyz reports a COUNT, not names (don't enumerate the attack surface to
+  // unauthenticated callers); the authenticated devops_status tool has names.
+  assert.equal(ready.integrations, 4);
 });
 
 test("requests without bearer token are rejected with 401", async () => {
   const res = await post({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }, { token: null });
   assert.equal(res.status, 401);
+});
+
+test("cross-origin requests are rejected (DNS-rebinding protection)", async () => {
+  // A browser page rebinding DNS to this server would carry its own Origin;
+  // reject it (403) before auth even with a valid token.
+  const res = await fetch(`${BASE}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${TOKEN}`,
+      origin: "http://evil.example.com",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+  });
+  assert.equal(res.status, 403);
 });
 
 test("requests with a wrong token are rejected with 401", async () => {

@@ -4,6 +4,24 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AppConfig } from "../config.js";
 import { jsonResult, registerCloser, safe } from "../util.js";
 
+const SERVER_JS_OPERATORS = ["$where", "$function", "$accumulator"];
+/** Reject MongoDB server-side-JavaScript operators anywhere in a filter/pipeline.
+ * `$where`/`$function`/`$accumulator` run arbitrary JS on the mongod server —
+ * a trivial DoS (`{$where:"while(true){}"}` pins a thread) and code-exec vector,
+ * and they slip past write-gating because they live in read-path tools. */
+function rejectServerSideJs(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) rejectServerSideJs(item);
+  } else if (value && typeof value === "object") {
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      if (SERVER_JS_OPERATORS.includes(key)) {
+        throw new Error(`${key} is not allowed (server-side JavaScript execution is disabled)`);
+      }
+      rejectServerSideJs(val);
+    }
+  }
+}
+
 let client: MongoClient | undefined;
 let connecting: Promise<MongoClient> | undefined;
 
@@ -55,6 +73,7 @@ export function registerMongo(server: McpServer, config: AppConfig): boolean {
       annotations: { readOnlyHint: true },
     },
     safe("mongo_find", async ({ database, collection, filter, projection, sort, limit }) => {
+      rejectServerSideJs(filter ?? {});
       const c = await getClient(cfg.uri);
       const docs = await c
         .db(database)
@@ -81,6 +100,7 @@ export function registerMongo(server: McpServer, config: AppConfig): boolean {
       annotations: { readOnlyHint: true },
     },
     safe("mongo_aggregate", async ({ database, collection, pipeline, limit }) => {
+      rejectServerSideJs(pipeline);
       const banned = ["$out", "$merge"];
       for (const stage of pipeline) {
         for (const key of Object.keys(stage)) {
@@ -143,6 +163,7 @@ export function registerMongo(server: McpServer, config: AppConfig): boolean {
       annotations: { readOnlyHint: true },
     },
     safe("mongo_count", async ({ database, collection, filter }) => {
+      rejectServerSideJs(filter ?? {});
       const c = await getClient(cfg.uri);
       const count = await c.db(database).collection(collection).countDocuments((filter ?? {}) as Document);
       return jsonResult({ count });
@@ -185,6 +206,7 @@ export function registerMongo(server: McpServer, config: AppConfig): boolean {
         annotations: { destructiveHint: true },
       },
       safe("mongo_update", async ({ database, collection, filter, update, many, upsert }) => {
+        rejectServerSideJs(filter);
         if (Object.keys(filter).length === 0 && !many) {
           throw new Error("Empty filter would match all documents — set many=true to confirm a collection-wide update.");
         }

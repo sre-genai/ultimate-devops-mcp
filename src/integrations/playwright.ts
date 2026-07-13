@@ -38,7 +38,53 @@ async function getBrowser(cfg: PlaywrightConfig): Promise<Browser> {
   return launching;
 }
 
+/** Block non-web schemes (file://, chrome://…) and private/loopback/link-local/
+ * metadata hosts so an agent (or prompt-injected content) can't turn the browser
+ * into an SSRF / local-file-read primitive. Best-effort on IP literals; a public
+ * hostname that DNS-resolves to a private IP is not caught here (documented) —
+ * an exposed deployment should also apply network egress policy. */
+function assertSafeUrl(raw: string): void {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new Error(`invalid url: ${raw}`);
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    throw new Error(`only http(s) URLs are allowed (got "${u.protocol}")`);
+  }
+  const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const blocked =
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal") ||
+    host === "::1" ||
+    host === "::" ||
+    host.startsWith("fe80:") ||
+    host.startsWith("fc") ||
+    host.startsWith("fd") ||
+    (() => {
+      const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/);
+      if (!m) return false;
+      const a = Number(m[1]);
+      const b = Number(m[2]);
+      return (
+        a === 0 ||
+        a === 127 || // loopback
+        a === 10 || // private
+        (a === 172 && b >= 16 && b <= 31) || // private
+        (a === 192 && b === 168) || // private
+        (a === 169 && b === 254) // link-local / cloud metadata
+      );
+    })();
+  if (blocked) {
+    throw new Error(`navigation to internal/loopback/link-local address "${host}" is blocked`);
+  }
+}
+
 async function withPage<T>(cfg: PlaywrightConfig, url: string, timeoutMs: number, fn: (page: import("playwright").Page) => Promise<T>): Promise<T> {
+  assertSafeUrl(url);
   const b = await getBrowser(cfg);
   const context = await b.newContext({ viewport: { width: 1280, height: 800 } });
   try {
