@@ -38,9 +38,16 @@ export interface RedisConfig {
 export interface KubernetesConfig {
   kubeconfigPath?: string;
 }
-export interface GrafanaConfig {
+export interface GrafanaInstance {
   url: string;
   token: string;
+}
+
+export interface GrafanaConfig {
+  /** Named Grafana instances, keyed by lowercase instance name. */
+  instances: Record<string, GrafanaInstance>;
+  /** The instance used when a tool call omits `instance`. */
+  primary: string;
 }
 export interface DatadogConfig {
   site: string;
@@ -210,14 +217,51 @@ export function loadConfig(): AppConfig {
     integrations.kubernetes = { kubeconfigPath: env("KUBECONFIG") };
   }
 
-  // --- Grafana ---
-  const grafanaUrl = env("GRAFANA_URL");
-  if (grafanaUrl) {
-    const token = env("GRAFANA_TOKEN") ?? env("GRAFANA_API_KEY");
-    if (!token) {
-      errors.push("GRAFANA_URL is set but GRAFANA_TOKEN is missing");
-    } else {
-      integrations.grafana = { url: grafanaUrl.replace(/\/+$/, ""), token };
+  // --- Grafana (single or multi-instance) ---
+  // Multi-instance: GRAFANA_INSTANCES=prod,nonprod with GRAFANA_PROD_URL /
+  // GRAFANA_PROD_TOKEN (and _NONPROD_…) pairs. Single-instance (bare
+  // GRAFANA_URL / GRAFANA_TOKEN) still works and registers as "default".
+  {
+    const instances: Record<string, GrafanaInstance> = {};
+    const names = (env("GRAFANA_INSTANCES") ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const name of names) {
+      const key = name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+      const url = env(`GRAFANA_${key}_URL`);
+      const token = env(`GRAFANA_${key}_TOKEN`) ?? env(`GRAFANA_${key}_API_KEY`);
+      if (!url) {
+        errors.push(`GRAFANA_INSTANCES lists "${name}" but GRAFANA_${key}_URL is missing`);
+      } else if (!token) {
+        errors.push(`GRAFANA_${key}_URL is set but GRAFANA_${key}_TOKEN (or _API_KEY) is missing`);
+      } else {
+        instances[name.toLowerCase()] = { url: url.replace(/\/+$/, ""), token };
+      }
+    }
+    // Backward-compatible bare single instance → "default".
+    const bareUrl = env("GRAFANA_URL");
+    if (bareUrl) {
+      const token = env("GRAFANA_TOKEN") ?? env("GRAFANA_API_KEY");
+      if (!token) {
+        errors.push("GRAFANA_URL is set but GRAFANA_TOKEN is missing");
+      } else {
+        instances["default"] = { url: bareUrl.replace(/\/+$/, ""), token };
+      }
+    }
+    if (Object.keys(instances).length > 0) {
+      const requested = env("GRAFANA_PRIMARY")?.toLowerCase();
+      if (requested && !instances[requested]) {
+        errors.push(`GRAFANA_PRIMARY="${requested}" is not one of the configured Grafana instances`);
+      }
+      const firstListed = names[0]?.toLowerCase();
+      const primary =
+        requested && instances[requested]
+          ? requested
+          : firstListed && instances[firstListed]
+            ? firstListed
+            : Object.keys(instances)[0];
+      integrations.grafana = { instances, primary };
     }
   }
 
