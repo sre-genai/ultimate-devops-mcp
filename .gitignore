@@ -2,5 +2,10 @@ node_modules/
 dist/
 .env
 .env.local
+# Filled-in Secret env files for the Helm chart (keep only *.example tracked)
+*.env
+!*.env.example
+udm.env
+udm-sealed.yaml
 *.log
 .DS_Store

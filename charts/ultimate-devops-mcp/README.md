@@ -28,6 +28,80 @@ claude mcp add --transport http ultimate-devops https://<host>/mcp \
   --header "Authorization: Bearer <MCP_AUTH_TOKEN>"
 ```
 
+## Creating the Secret (step by step)
+
+Each Secret **key must be exactly the env-var name** the app expects
+(`MCP_AUTH_TOKEN`, `POSTGRES_URL`, …). The chart injects the whole Secret via
+`envFrom`, so anything you add appears as a container env var.
+
+### Easiest: from an env file (`--from-env-file`)
+
+```bash
+# 1. Copy the template and fill in real values (only the integrations you use)
+cp charts/ultimate-devops-mcp/udm.env.example udm.env
+$EDITOR udm.env
+
+# 2. Generate a strong auth token and put it in MCP_AUTH_TOKEN
+openssl rand -hex 32          # paste into MCP_AUTH_TOKEN= in udm.env
+
+# 3. Create the Secret (same namespace you install the chart into)
+kubectl create namespace devops --dry-run=client -o yaml | kubectl apply -f -
+kubectl create secret generic udm-secrets -n devops --from-env-file=udm.env
+
+# 4. Install the chart pointed at it
+helm install udm ./charts/ultimate-devops-mcp -n devops \
+  --set existingSecret=udm-secrets
+
+# 5. Clean up the plaintext file — never commit it
+shred -u udm.env    # or: rm udm.env
+```
+
+> `udm.env.example` in this chart lists every supported variable, grouped by
+> integration.
+
+### Alternative: from literals (a few values)
+
+```bash
+kubectl create secret generic udm-secrets -n devops \
+  --from-literal=MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
+  --from-literal=POSTGRES_URL="postgres://user:pass@pg:5432/app" \
+  --from-literal=DATADOG_API_KEY="..."
+```
+
+### Alternative: let the chart create it
+
+Put the values in `secrets:` in your Helm values and the chart creates the
+Secret for you (fine if that file is SOPS/sealed):
+
+```yaml
+secrets:
+  MCP_AUTH_TOKEN: "…"
+  POSTGRES_URL: "postgres://user:pass@pg:5432/app"
+```
+
+### GitOps (encrypted in git)
+
+Don't commit plaintext. Seal it and commit the sealed form:
+
+```bash
+kubectl create secret generic udm-secrets -n devops --from-env-file=udm.env \
+  --dry-run=client -o yaml | kubeseal -o yaml > udm-sealed.yaml   # commit this
+```
+
+(Or use SOPS / External Secrets Operator / Vault — all pair with
+`existingSecret`.)
+
+### Verify / rotate
+
+```bash
+# list keys (not values)
+kubectl get secret udm-secrets -n devops -o jsonpath='{.data}' | jq 'keys'
+# rotate a value, then restart to pick it up
+kubectl create secret generic udm-secrets -n devops --from-env-file=udm.env \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl rollout restart deploy/udm-ultimate-devops-mcp -n devops
+```
+
 ## How config is split
 
 | Kind | Where | Rendered into |
