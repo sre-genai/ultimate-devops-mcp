@@ -1,0 +1,22 @@
+apiVersion: v2
+name: ultimate-devops-mcp
+description: >-
+  Ultimate DevOps MCP server — one authenticated Streamable-HTTP endpoint giving
+  AI clients read-only-by-default operational access to Postgres, MongoDB, Neo4j,
+  Elasticsearch, Kafka, Redis, Kubernetes, Prometheus, Grafana, Datadog, ArgoCD,
+  GitLab, GitHub, Bitbucket, Temporal and Playwright.
+type: application
+# Chart version — bump on chart changes.
+version: 0.1.0
+# The application version this chart deploys (the container image tag default).
+appVersion: "1.0.0"
+keywords:
+  - mcp
+  - devops
+  - model-context-protocol
+  - ai
+home: https://github.com/sre-genai/ultimate-devops-mcp
+sources:
+  - https://github.com/sre-genai/ultimate-devops-mcp
+maintainers:
+  - name: sre-genai

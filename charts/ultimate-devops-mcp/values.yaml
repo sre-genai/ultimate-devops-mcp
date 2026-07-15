@@ -1,0 +1,264 @@
+# Default values for ultimate-devops-mcp.
+# This is a YAML-formatted file. Override with `-f my-values.yaml` or `--set`.
+
+# =============================================================================
+# FEATURE TOGGLES — what's ON / OFF. Flip these; details live in the sections
+# further down. (Everything defaults OFF except read-only auth-required serving.)
+# =============================================================================
+#   istio.enabled              false  → Istio VirtualService at <host>/mcp
+#   ingress.enabled            false  → plain k8s Ingress (use instead of istio)
+#   autoscaling.enabled        false  → HorizontalPodAutoscaler (HA scaling)
+#   podDisruptionBudget.enabled false → PodDisruptionBudget (HA during drains)
+#   networkPolicy.enabled      false  → default-deny ingress NetworkPolicy
+#   rbac.create                false  → RBAC for the in-cluster k8s integration
+#   serviceAccount.create      true   → dedicated ServiceAccount
+#   config.MCP_ALLOW_WRITES    "false"→ register mutating (write/delete) tools
+#   config.MCP_TRUST_PROXY     "true" → trust X-Forwarded-For behind a proxy
+#   insecureAllowNoAuth        false  → run exposed with NO auth (do not enable)
+#
+# Enable a block by setting its `enabled: true` (or the flag above), then fill
+# in that section. e.g. turn on Istio + HA:
+#   --set istio.enabled=true --set autoscaling.enabled=true --set podDisruptionBudget.enabled=true
+# =============================================================================
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/sre-genai/ultimate-devops-mcp
+  # Overrides the image tag (defaults to the chart's appVersion).
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -----------------------------------------------------------------------------
+# Core MCP server settings (non-secret) — rendered into a ConfigMap and injected
+# as env vars. The container already sets MCP_HTTP_HOST=0.0.0.0 and
+# MCP_HTTP_PORT=8080; those are managed by the chart (see below) and need not be
+# set here.
+# -----------------------------------------------------------------------------
+config:
+  # Read-only by default. Set "true" to register mutating tools (writes/deletes).
+  MCP_ALLOW_WRITES: "false"
+  # Behind a K8s Service / Istio gateway, requests arrive via a proxy — trust
+  # X-Forwarded-For so rate limiting keys on the real client IP, not the gateway.
+  MCP_TRUST_PROXY: "true"
+  LOG_LEVEL: "info"
+  MCP_RATE_LIMIT_PER_MINUTE: "300"
+  MCP_SESSION_IDLE_TIMEOUT_MINUTES: "30"
+  MCP_MAX_RESULT_CHARS: "50000"
+  # Comma-separated browser origins to allow (DNS-rebinding guard). Non-browser
+  # MCP clients send no Origin and are always allowed — only set this for
+  # browser-based clients. e.g. "https://app.example.com"
+  # MCP_ALLOWED_ORIGINS: ""
+
+  # ---- Integration endpoints & non-secret config -----------------------------
+  # Uncomment/populate the integrations you use. An integration's tools are
+  # registered only when its env vars are present. URLs/flags are non-secret and
+  # belong here; tokens/passwords belong in `secrets` (or `existingSecret`).
+  #
+  # POSTGRES_URL: "postgres://user@pg:5432/db"     # password → secrets
+  # POSTGRES_DB_ALLOW: "development,qa,/preprod/i"
+  # POSTGRES_PGBOUNCER: "true"
+  # MONGODB_URI: "mongodb://mongo:27017"           # creds → secrets
+  # NEO4J_URL: "bolt://neo4j:7687"
+  # NEO4J_USERNAME: "neo4j"
+  # NEO4J_DATABASE: "neo4j"
+  # ELASTICSEARCH_NODE: "https://es:9200"
+  # ELASTICSEARCH_USERNAME: "elastic"
+  # KAFKA_BROKERS: "kafka:9092"
+  # KAFKA_CLIENT_ID: "ultimate-devops-mcp"
+  # KAFKA_SSL: "true"
+  # KAFKA_SASL_MECHANISM: "scram-sha-512"
+  # KAFKA_SASL_USERNAME: "svc"
+  # REDIS_URL: "redis://redis:6379"                # password in URL → secrets
+  # PROMETHEUS_URL: "http://prometheus:9090"
+  # GRAFANA_URL: "https://grafana.example.com"
+  # DATADOG_SITE: "datadoghq.com"
+  # ARGOCD_URL: "https://argocd.example.com"
+  # GITLAB_URL: "https://gitlab.com"
+  # GITHUB_API_URL: "https://api.github.com"
+  # BITBUCKET_WORKSPACE: "myworkspace"
+  # BITBUCKET_USERNAME: "svc"
+  # TEMPORAL_ADDRESS: "temporal:7233"
+  # TEMPORAL_NAMESPACE: "default"
+  # TEMPORAL_TLS: "true"
+  # PLAYWRIGHT_ENABLED: "true"   # requires the WITH_BROWSER image variant
+
+# -----------------------------------------------------------------------------
+# Secrets — sensitive env vars (tokens, passwords). Two mutually-exclusive modes:
+#
+#  1. Chart-managed Secret: populate `secrets` below (values are put into a
+#     Secret this chart creates). Fine for GitOps if the file is sealed/SOPS'd.
+#  2. Pre-existing Secret (recommended for prod): set `existingSecret` to the
+#     name of a Secret whose KEYS are the env var names (MCP_AUTH_TOKEN, etc.).
+#     When set, `secrets` below is ignored.
+#
+# MCP_AUTH_TOKEN is REQUIRED (the server refuses to boot exposed without it).
+# The chart fails to render if no auth token source is provided, unless you set
+# insecureAllowNoAuth=true (NOT recommended).
+# -----------------------------------------------------------------------------
+existingSecret: ""
+
+secrets:
+  {}
+  # MCP_AUTH_TOKEN: "change-me-to-a-long-random-token"
+  # POSTGRES_URL: "postgres://user:pass@pg:5432/db"   # or keep in config w/o pw
+  # MONGODB_URI: "mongodb://user:pass@mongo:27017"
+  # REDIS_URL: "redis://:pass@redis:6379"
+  # NEO4J_PASSWORD: "..."
+  # ELASTICSEARCH_PASSWORD: "..."   # or ELASTICSEARCH_API_KEY
+  # KAFKA_SASL_PASSWORD: "..."
+  # PROMETHEUS_BEARER_TOKEN: "..."
+  # GRAFANA_TOKEN: "..."            # or GRAFANA_API_KEY
+  # DATADOG_API_KEY: "..."
+  # DATADOG_APP_KEY: "..."
+  # ARGOCD_TOKEN: "..."
+  # GITLAB_TOKEN: "..."
+  # GITHUB_TOKEN: "..."
+  # BITBUCKET_TOKEN: "..."          # or BITBUCKET_APP_PASSWORD
+  # TEMPORAL_API_KEY: "..."
+
+# Escape hatch: allow the pod to run exposed with NO auth token (sets
+# MCP_INSECURE=1). Leaves every integration's production credentials open to any
+# reachable client. Keep false.
+insecureAllowNoAuth: false
+
+# Extra plain env vars (non-secret) appended verbatim to the container.
+extraEnv: []
+#  - name: SOME_FLAG
+#    value: "1"
+
+# -----------------------------------------------------------------------------
+# Service
+# -----------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+# -----------------------------------------------------------------------------
+# Istio VirtualService — exposes the server at <host>/mcp. Requires an Istio
+# Gateway (referenced by `gateways`). Disable and use `ingress` instead if you
+# run a plain ingress controller.
+# -----------------------------------------------------------------------------
+istio:
+  enabled: false
+  gateways:
+    - istio-system/ingressgateway
+  hosts:
+    - ultimate-devops-mcp.example.com
+  # Route only the MCP paths; everything else 404s at the mesh edge.
+  matchPrefixes:
+    - /mcp
+    - /healthz
+    - /readyz
+  # Optional CORS (only needed for browser clients; also set MCP_ALLOWED_ORIGINS).
+  corsPolicy: {}
+
+# -----------------------------------------------------------------------------
+# Plain Kubernetes Ingress (alternative to Istio). Only one should be enabled.
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: ultimate-devops-mcp.example.com
+      paths:
+        - path: /mcp
+          pathType: Prefix
+  tls: []
+
+# -----------------------------------------------------------------------------
+# RBAC — only needed for the in-cluster Kubernetes integration (K8S_ENABLED=true).
+# Creates a read-only ClusterRole (pods, deployments, services, nodes, events,
+# logs). Write tools (scale/restart/delete) need MCP_ALLOW_WRITES=true AND the
+# extra verbs enabled below.
+# -----------------------------------------------------------------------------
+rbac:
+  create: false
+  # Grant the mutating verbs the write tools need (scale, rollout restart,
+  # delete pod). Only takes effect when config.MCP_ALLOW_WRITES=true as well.
+  allowWrites: false
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# -----------------------------------------------------------------------------
+# Pod / container hardening (matches the image's non-root `node` user).
+# -----------------------------------------------------------------------------
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 15
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 3
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Playwright (browser tools) needs writable /tmp and more shm; the read-only
+# root filesystem otherwise blocks Chromium. An emptyDir /tmp is always mounted
+# so readOnlyRootFilesystem stays true.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 75
+  targetMemoryUtilizationPercentage: ""
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# NetworkPolicy: default-deny ingress except from the mesh/ingress namespace.
+networkPolicy:
+  enabled: false
+  # Namespaces allowed to reach the server (by namespace label). Empty = allow
+  # from anywhere in-cluster (still authenticated by MCP_AUTH_TOKEN).
+  ingressFromNamespaces:
+    - istio-system
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []

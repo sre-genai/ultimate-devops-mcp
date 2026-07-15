@@ -1,0 +1,46 @@
+{{- if .Values.rbac.create }}
+# Read-only cluster access for the in-cluster Kubernetes integration
+# (K8S_ENABLED=true). Cluster-scoped so k8s_list/get/logs/events work across
+# namespaces; scope this down to a Role/RoleBinding per namespace if preferred.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "udm.fullname" . }}
+  labels:
+    {{- include "udm.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "nodes", "namespaces", "events", "configmaps", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  {{- if and .Values.rbac.allowWrites (eq (toString (index .Values.config "MCP_ALLOW_WRITES")) "true") }}
+  # Mutating verbs for the write tools (k8s_scale, k8s_rollout_restart,
+  # k8s_delete_pod). Gated behind both rbac.allowWrites and MCP_ALLOW_WRITES.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale", "statefulsets", "statefulsets/scale"]
+    verbs: ["patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "udm.fullname" . }}
+  labels:
+    {{- include "udm.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "udm.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "udm.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

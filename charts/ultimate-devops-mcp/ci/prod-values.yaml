@@ -1,0 +1,51 @@
+# Example production values — for `helm template`/lint validation and as a
+# starting point. Uses a pre-created Secret (recommended), Istio exposure, HPA,
+# PDB and the in-cluster Kubernetes integration.
+replicaCount: 2
+
+image:
+  tag: "1.0.0"
+
+existingSecret: udm-secrets
+
+config:
+  MCP_ALLOW_WRITES: "false"
+  MCP_TRUST_PROXY: "true"
+  LOG_LEVEL: "info"
+  K8S_ENABLED: "true"
+  PROMETHEUS_URL: "http://prometheus-server.monitoring:9090"
+  GRAFANA_URL: "https://grafana.example.com"
+  ARGOCD_URL: "https://argocd.example.com"
+
+rbac:
+  create: true
+  allowWrites: false
+
+istio:
+  enabled: true
+  gateways:
+    - istio-system/ingressgateway
+  hosts:
+    - ultimate-devops-mcp.example.com
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  ingressFromNamespaces:
+    - istio-system
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: ultimate-devops-mcp

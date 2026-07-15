@@ -1,0 +1,43 @@
+✅ {{ include "udm.fullname" . }} deployed to namespace {{ .Release.Namespace }}.
+
+The MCP server speaks Streamable HTTP at the /mcp endpoint on port {{ .Values.service.port }}.
+
+{{- if .Values.istio.enabled }}
+
+Reachable via Istio VirtualService at:
+{{- range .Values.istio.hosts }}
+  https://{{ . }}/mcp
+{{- end }}
+{{- else if .Values.ingress.enabled }}
+
+Reachable via Ingress at:
+{{- range .Values.ingress.hosts }}
+  https://{{ .host }}/mcp
+{{- end }}
+{{- else }}
+
+No external route enabled (istio.enabled / ingress.enabled are false).
+Port-forward to reach it locally:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "udm.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  # then use http://127.0.0.1:{{ .Values.service.port }}/mcp
+{{- end }}
+
+Add it to Claude Code (token from your Secret "{{ include "udm.secretName" . }}"):
+
+  claude mcp add --transport http ultimate-devops \
+    https://<host>/mcp \
+    --header "Authorization: Bearer <MCP_AUTH_TOKEN>"
+
+{{- if .Values.insecureAllowNoAuth }}
+
+⚠️  insecureAllowNoAuth=true — the /mcp endpoint is UNAUTHENTICATED and exposed.
+    Set an MCP_AUTH_TOKEN and disable this before any real use.
+{{- end }}
+{{- if eq (toString (index .Values.config "MCP_ALLOW_WRITES")) "true" }}
+
+⚠️  MCP_ALLOW_WRITES=true — mutating tools (writes/deletes) are registered.
+{{- end }}
+
+Check status:
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "udm.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }} -f

@@ -1,0 +1,28 @@
+{{- if .Values.istio.enabled }}
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ include "udm.fullname" . }}
+  labels:
+    {{- include "udm.labels" . | nindent 4 }}
+spec:
+  hosts:
+    {{- toYaml .Values.istio.hosts | nindent 4 }}
+  gateways:
+    {{- toYaml .Values.istio.gateways | nindent 4 }}
+  http:
+    - match:
+        {{- range .Values.istio.matchPrefixes }}
+        - uri:
+            prefix: {{ . | quote }}
+        {{- end }}
+      route:
+        - destination:
+            host: {{ include "udm.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+            port:
+              number: {{ .Values.service.port }}
+      {{- with .Values.istio.corsPolicy }}
+      corsPolicy:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
