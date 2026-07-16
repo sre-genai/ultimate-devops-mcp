@@ -75,6 +75,21 @@ export interface BitbucketConfig {
   authHeader: string;
   workspace?: string;
 }
+
+export interface JiraInstance {
+  /** Site root, e.g. https://yourco.atlassian.net (no trailing slash). */
+  baseUrl: string;
+  authHeader: string;
+  /** REST version: 3 for Jira Cloud, 2 for Server/Data Center. */
+  apiVersion: 2 | 3;
+}
+
+export interface JiraConfig {
+  /** Named Jira instances, keyed by lowercase name. */
+  instances: Record<string, JiraInstance>;
+  /** Instance used when a tool call omits `instance`. */
+  primary: string;
+}
 export interface PlaywrightConfig {
   noSandbox: boolean;
 }
@@ -104,6 +119,7 @@ export interface Integrations {
   gitlab?: GitlabConfig;
   github?: GitHubConfig;
   bitbucket?: BitbucketConfig;
+  jira?: JiraConfig;
   playwright?: PlaywrightConfig;
   temporal?: TemporalConfig;
 }
@@ -334,6 +350,66 @@ export function loadConfig(): AppConfig {
     errors.push(
       "Bitbucket needs BITBUCKET_TOKEN, or BOTH BITBUCKET_USERNAME and BITBUCKET_APP_PASSWORD",
     );
+  }
+
+  // --- Jira (single or multi-instance; Cloud basic-auth or Server/DC bearer) ---
+  // Cloud:  JIRA_URL + JIRA_EMAIL + JIRA_API_TOKEN  (REST v3)
+  // Server: JIRA_URL + JIRA_TOKEN                    (REST v2, bearer PAT)
+  // Multi:  JIRA_INSTANCES=prod,sandbox + JIRA_PROD_URL/EMAIL/API_TOKEN … pairs.
+  {
+    const parseJira = (prefix: string, label: string): JiraInstance | undefined => {
+      const url = env(`${prefix}URL`);
+      if (!url) return undefined; // not configured
+      const email = env(`${prefix}EMAIL`);
+      const apiToken = env(`${prefix}API_TOKEN`);
+      const token = env(`${prefix}TOKEN`);
+      if (email && apiToken) {
+        return {
+          baseUrl: url.replace(/\/+$/, ""),
+          authHeader: `Basic ${Buffer.from(`${email}:${apiToken}`).toString("base64")}`,
+          apiVersion: 3,
+        };
+      }
+      if (token) {
+        return { baseUrl: url.replace(/\/+$/, ""), authHeader: `Bearer ${token}`, apiVersion: 2 };
+      }
+      errors.push(
+        `${label} needs ${prefix}EMAIL + ${prefix}API_TOKEN (Jira Cloud) or ${prefix}TOKEN (Server/DC)`,
+      );
+      return undefined;
+    };
+
+    const instances: Record<string, JiraInstance> = {};
+    const names = (env("JIRA_INSTANCES") ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const name of names) {
+      const key = name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+      if (!env(`JIRA_${key}_URL`)) {
+        errors.push(`JIRA_INSTANCES lists "${name}" but JIRA_${key}_URL is missing`);
+        continue;
+      }
+      const inst = parseJira(`JIRA_${key}_`, `Jira instance "${name}"`);
+      if (inst) instances[name.toLowerCase()] = inst;
+    }
+    const bare = parseJira("JIRA_", "Jira");
+    if (bare) instances["default"] = bare;
+
+    if (Object.keys(instances).length > 0) {
+      const requested = env("JIRA_PRIMARY")?.toLowerCase();
+      if (requested && !instances[requested]) {
+        errors.push(`JIRA_PRIMARY="${requested}" is not one of the configured Jira instances`);
+      }
+      const firstListed = names[0]?.toLowerCase();
+      const primary =
+        requested && instances[requested]
+          ? requested
+          : firstListed && instances[firstListed]
+            ? firstListed
+            : Object.keys(instances)[0];
+      integrations.jira = { instances, primary };
+    }
   }
 
   // --- Playwright ---

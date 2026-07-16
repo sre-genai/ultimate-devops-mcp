@@ -15,6 +15,7 @@ import { registerArgoCD } from "./integrations/argocd.js";
 import { registerGitlab } from "./integrations/gitlab.js";
 import { registerGitHub } from "./integrations/github.js";
 import { registerBitbucket } from "./integrations/bitbucket.js";
+import { registerJira } from "./integrations/jira.js";
 import { registerPlaywright } from "./integrations/playwright.js";
 import { registerTemporal } from "./integrations/temporal.js";
 
@@ -38,6 +39,7 @@ const REGISTRARS: Record<string, Registrar> = {
   gitlab: registerGitlab,
   github: registerGitHub,
   bitbucket: registerBitbucket,
+  jira: registerJira,
   playwright: registerPlaywright,
   temporal: registerTemporal,
 };
