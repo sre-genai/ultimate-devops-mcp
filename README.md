@@ -216,6 +216,25 @@ curl -sS -X POST http://localhost:8080/mcp \
 - **Scope credentials minimally** — e.g. a read-only Postgres role, a Grafana service account with Viewer, a GitLab token with `read_api` when writes are off.
 - The LLM client decides which tools to call; treat this server's credentials as the blast radius.
 
+## Observability
+
+The gateway exposes its own health and telemetry on unauthenticated probe endpoints (like `/healthz`) so Kubernetes and Prometheus can reach them without a bearer token:
+
+- `GET /healthz` — liveness. `{ "status": "ok" }`.
+- `GET /readyz` — readiness. Reports the server version, active session count, whether writes are allowed, and the count **and names** of configured integrations. This is configured state only — it does **not** perform live network pings to backends.
+- `GET /metrics` — Prometheus text exposition (`Content-Type: text/plain; version=0.0.4`). Per-tool call counts, error counts, and a duration histogram (`mcp_tool_duration_seconds`), plus process-wide `mcp_tool_calls_total`, `mcp_tool_errors_total`, and `mcp_uptime_seconds`.
+
+Example scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: ultimate-devops-mcp
+    static_configs:
+      - targets: ["ultimate-devops-mcp:8080"]
+```
+
+**`/metrics` is intentionally unauthenticated** so a scraper needs no credentials. It exposes only aggregate tool-call counters — never integration credentials or tool payloads. Keep it reachable only from your monitoring network (ingress rule / NetworkPolicy); do not expose it to the public internet.
+
 ## Architecture
 
 - `src/index.ts` — Express app, Streamable HTTP session management, auth (bearer + scoped keys), rate limit, health, shutdown

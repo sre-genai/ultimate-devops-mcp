@@ -7,6 +7,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, enabledIntegrationNames } from "./config.js";
 import { logger } from "./logger.js";
 import { closeAll, setMaxResultChars } from "./util.js";
+import { renderPrometheus } from "./metrics.js";
 import { createMcpServer, SERVER_NAME, SERVER_VERSION } from "./server.js";
 import { type KeyIdentity, LOCAL_IDENTITY, withRequestContext } from "./audit.js";
 
@@ -84,14 +85,23 @@ app.get("/healthz", (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
 app.get("/readyz", (_req, res) => {
+  // Configured state only — no live network pings to backends.
+  const integrations = enabledIntegrationNames(config);
   res.status(200).json({
     status: "ok",
     server: SERVER_NAME,
     version: SERVER_VERSION,
     sessions: sessions.size,
-    // Count only — don't enumerate which backends are wired to unauth callers.
-    integrations: enabledIntegrationNames(config).length,
+    writesAllowed: config.allowWrites,
+    integrations: { count: integrations.length, names: integrations },
   });
+});
+
+// Prometheus scrape target. Deliberately unauthenticated (like /healthz) so a
+// scraper needs no bearer token; it exposes only aggregate tool-call counters,
+// never credentials or payloads. Keep it behind your network policy / ingress.
+app.get("/metrics", (_req, res) => {
+  res.status(200).type("text/plain; version=0.0.4").send(renderPrometheus());
 });
 
 // Resolve a presented bearer to a key identity (constant-time compare). The bare
