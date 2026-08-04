@@ -146,6 +146,19 @@ export interface TemporalConfig {
   serverName?: string;
 }
 
+export interface FederatedServerConfig {
+  /** Lowercase namespace prefix for this server's tools (`<name>__<remoteTool>`). */
+  name: string;
+  /** Remote MCP endpoint (Streamable HTTP), e.g. https://host/mcp. */
+  url: string;
+  /** Optional bearer token sent as `Authorization: Bearer <token>`. */
+  token?: string;
+}
+
+export interface FederationConfig {
+  servers: FederatedServerConfig[];
+}
+
 export interface Integrations {
   postgres?: PostgresConfig;
   mongo?: MongoConfig;
@@ -177,6 +190,7 @@ export interface AppConfig {
   maxResultChars: number;
   trustProxy: boolean;
   integrations: Integrations;
+  federation?: FederationConfig;
 }
 
 function env(name: string): string | undefined {
@@ -565,6 +579,32 @@ export function loadConfig(): AppConfig {
     }
   }
 
+  // --- MCP federation (front other MCP servers, re-expose their tools namespaced) ---
+  // MCP_FEDERATE=name1,name2 with MCP_FEDERATE_<NAME>_URL (required) and
+  // MCP_FEDERATE_<NAME>_TOKEN (optional bearer) per entry.
+  let federation: FederationConfig | undefined;
+  {
+    const names = (env("MCP_FEDERATE") ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const servers: FederatedServerConfig[] = [];
+    for (const name of names) {
+      const key = name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+      const url = env(`MCP_FEDERATE_${key}_URL`);
+      if (!url) {
+        errors.push(`MCP_FEDERATE lists "${name}" but MCP_FEDERATE_${key}_URL is missing`);
+        continue;
+      }
+      servers.push({
+        name: name.toLowerCase(),
+        url: url.replace(/\/+$/, ""),
+        token: env(`MCP_FEDERATE_${key}_TOKEN`),
+      });
+    }
+    if (servers.length > 0) federation = { servers };
+  }
+
   if (errors.length > 0) {
     throw new Error(`Configuration errors:\n  - ${errors.join("\n  - ")}`);
   }
@@ -584,6 +624,7 @@ export function loadConfig(): AppConfig {
     maxResultChars: envInt("MCP_MAX_RESULT_CHARS", 50_000),
     trustProxy: envBool("MCP_TRUST_PROXY"),
     integrations,
+    federation,
   };
 }
 

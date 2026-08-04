@@ -18,6 +18,7 @@ import { registerBitbucket } from "./integrations/bitbucket.js";
 import { registerJira } from "./integrations/jira.js";
 import { registerPlaywright } from "./integrations/playwright.js";
 import { registerTemporal } from "./integrations/temporal.js";
+import { registerFederation } from "./federation.js";
 
 export const SERVER_NAME = "ultimate-devops-mcp";
 export const SERVER_VERSION = "1.0.0";
@@ -49,13 +50,19 @@ const REGISTRARS: Record<string, Registrar> = {
  * module-level lazy clients, so DB pools / producers / browsers are shared
  * across sessions and created only on first use.
  */
-export function createMcpServer(config: AppConfig): { server: McpServer; enabled: string[] } {
+export async function createMcpServer(
+  config: AppConfig,
+): Promise<{ server: McpServer; enabled: string[] }> {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
   const enabled: string[] = [];
   for (const [name, register] of Object.entries(REGISTRARS)) {
     if (register(server, config)) enabled.push(name);
   }
+
+  // Federated MCP servers re-expose their tools as `<name>__<remoteTool>`.
+  const federated = await registerFederation(server, config);
+  for (const name of federated) enabled.push(`federation:${name}`);
 
   server.registerTool(
     "devops_status",

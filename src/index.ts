@@ -188,7 +188,7 @@ app.post("/mcp", async (req: Request, res: Response) => {
           logger.info({ sessionId: sid, activeSessions: sessions.size }, "session closed");
         }
       };
-      const { server } = createMcpServer(config);
+      const { server } = await createMcpServer(config);
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
       return;

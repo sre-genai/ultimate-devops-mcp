@@ -123,6 +123,29 @@ Write tools (⚡) are registered **only** when `MCP_ALLOW_WRITES=true`.
 | **GitHub** | `github_list_repos`, `github_list_pull_requests`, `github_get_pull_request`, `github_list_workflow_runs`, `github_workflow_run_jobs`, `github_list_issues`, `github_get_issue`, `github_list_commits`, ⚡`github_dispatch_workflow`, ⚡`github_rerun_workflow` |
 | **Bitbucket** | `bitbucket_list_repositories`, `bitbucket_list_pull_requests`, `bitbucket_get_pull_request`, `bitbucket_list_pipelines`, `bitbucket_get_pipeline`, ⚡`bitbucket_trigger_pipeline` |
 | **Browser** | `browser_navigate`, `browser_screenshot`, `browser_extract` |
+| **Federation** | `<name>__<remoteTool>` — every tool of each federated MCP server, namespaced (see below) |
+
+## MCP federation (gateway)
+
+This server can front **other** MCP servers and re-expose their tools through its own
+single `/mcp` endpoint, so one client connection reaches your in-house MCP servers
+alongside the built-in integrations. Each remote tool is registered locally as
+`<name>__<remoteTool>` (e.g. `payments__refund_charge`), preserving its input schema.
+
+Declare the servers with `MCP_FEDERATE`, then a URL (required) and optional bearer
+token per name:
+
+```bash
+MCP_FEDERATE=payments,search
+MCP_FEDERATE_PAYMENTS_URL=https://payments-mcp.internal/mcp
+MCP_FEDERATE_PAYMENTS_TOKEN=…                       # sent as Authorization: Bearer …
+MCP_FEDERATE_SEARCH_URL=https://search-mcp.internal/mcp
+```
+
+Remote servers are contacted over Streamable HTTP the first time a session needs them;
+the connections and tool lists are cached and shared across sessions. A remote that is
+unreachable is logged and skipped — it never blocks startup. `devops_status` lists the
+connected servers as `federation:<name>`.
 
 ## Example prompts
 
@@ -173,6 +196,7 @@ curl -sS -X POST http://localhost:8080/mcp \
 - `src/index.ts` — Express app, Streamable HTTP session management, auth, rate limit, health, shutdown
 - `src/server.ts` — builds the `McpServer` and registers enabled integrations
 - `src/integrations/*.ts` — one file per system; lazy singleton clients shared across sessions
+- `src/federation.ts` — connects to other MCP servers and registers namespaced proxy tools
 - Adding an integration = one new file exporting `register<Name>(server, config)` + a config block. PRs welcome.
 
 ## Roadmap

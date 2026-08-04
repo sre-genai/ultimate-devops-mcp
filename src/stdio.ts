@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   setMaxResultChars(config.maxResultChars);
 
-  const { server, enabled } = createMcpServer(config);
+  const { server, enabled } = await createMcpServer(config);
   const transport = new StdioServerTransport();
 
   let shuttingDown = false;
