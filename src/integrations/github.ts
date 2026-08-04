@@ -1,13 +1,13 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { AppConfig, GitHubConfig } from "../config.js";
+import type { AppConfig, GitHubInstance } from "../config.js";
 import { httpRequest, jsonResult, qs, safe, textResult } from "../util.js";
 
-function api(cfg: GitHubConfig, path: string, opts: Parameters<typeof httpRequest>[1] = {}) {
-  return httpRequest(`${cfg.baseUrl}${path}`, {
+function api(inst: GitHubInstance, path: string, opts: Parameters<typeof httpRequest>[1] = {}) {
+  return httpRequest(`${inst.baseUrl}${path}`, {
     ...opts,
     headers: {
-      authorization: `Bearer ${cfg.token}`,
+      authorization: `Bearer ${inst.token}`,
       accept: "application/vnd.github+json",
       "x-github-api-version": "2022-11-28",
       ...(opts.headers ?? {}),
@@ -20,6 +20,26 @@ type Obj = Record<string, unknown>;
 export function registerGitHub(server: McpServer, config: AppConfig): boolean {
   const cfg = config.integrations.github;
   if (!cfg) return false;
+  const { instances, primary } = cfg;
+
+  const names = Object.keys(instances);
+  const multi = names.length > 1;
+  const instanceArg = z
+    .enum(names as [string, ...string[]])
+    .optional()
+    .describe(
+      multi
+        ? `Which GitHub to target: ${names.join(", ")} (default: ${primary}).`
+        : `GitHub instance (only "${primary}" configured; optional).`,
+    );
+
+  function pick(instance?: string): GitHubInstance {
+    const inst = instances[instance ?? primary];
+    if (!inst) {
+      throw new Error(`Unknown GitHub instance "${instance}". Configured: ${names.join(", ")}.`);
+    }
+    return inst;
+  }
 
   server.registerTool(
     "github_list_repos",
@@ -28,12 +48,14 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
       description:
         "Lists repositories for an org or user (owner), or the authenticated user's repos when owner is omitted. Sorted by recent push.",
       inputSchema: {
+        instance: instanceArg,
         owner: z.string().optional().describe("Org or user login; omit for your own repos"),
         limit: z.number().int().min(1).max(100).optional(),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("github_list_repos", async ({ owner, limit }) => {
+    safe("github_list_repos", async ({ instance, owner, limit }) => {
+      const inst = pick(instance);
       const per_page = limit ?? 30;
       const path = owner
         ? `/orgs/${encodeURIComponent(owner)}/repos${qs({ per_page, sort: "pushed" })}`
@@ -41,9 +63,9 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
       // Fall back to the user endpoint if the owner isn't an org.
       let res: Obj[];
       try {
-        res = (await api(cfg, path)) as Obj[];
+        res = (await api(inst, path)) as Obj[];
       } catch {
-        res = (await api(cfg, `/users/${encodeURIComponent(owner ?? "")}/repos${qs({ per_page, sort: "pushed" })}`)) as Obj[];
+        res = (await api(inst, `/users/${encodeURIComponent(owner ?? "")}/repos${qs({ per_page, sort: "pushed" })}`)) as Obj[];
       }
       return jsonResult(
         res.map((r) => ({
@@ -65,6 +87,7 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
       title: "List GitHub pull requests",
       description: "Lists pull requests for a repo.",
       inputSchema: {
+        instance: instanceArg,
         owner: z.string(),
         repo: z.string(),
         state: z.enum(["open", "closed", "all"]).optional().describe("Default: open"),
@@ -72,9 +95,9 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
       },
       annotations: { readOnlyHint: true },
     },
-    safe("github_list_pull_requests", async ({ owner, repo, state, limit }) => {
+    safe("github_list_pull_requests", async ({ instance, owner, repo, state, limit }) => {
       const res = (await api(
-        cfg,
+        pick(instance),
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls${qs({
           state: state ?? "open",
           per_page: limit ?? 20,
@@ -102,12 +125,12 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
     {
       title: "Get GitHub pull request",
       description: "Full detail of one PR: mergeable state, review/CI status, diff size.",
-      inputSchema: { owner: z.string(), repo: z.string(), number: z.number().int() },
+      inputSchema: { instance: instanceArg, owner: z.string(), repo: z.string(), number: z.number().int() },
       annotations: { readOnlyHint: true },
     },
-    safe("github_get_pull_request", async ({ owner, repo, number }) => {
+    safe("github_get_pull_request", async ({ instance, owner, repo, number }) => {
       const pr = (await api(
-        cfg,
+        pick(instance),
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}`,
       )) as Obj;
       return jsonResult({
@@ -134,6 +157,7 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
       title: "List GitHub Actions runs",
       description: "Lists recent GitHub Actions workflow runs for a repo — use to find failing CI.",
       inputSchema: {
+        instance: instanceArg,
         owner: z.string(),
         repo: z.string(),
         branch: z.string().optional(),
@@ -144,9 +168,9 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
       },
       annotations: { readOnlyHint: true },
     },
-    safe("github_list_workflow_runs", async ({ owner, repo, branch, status, limit }) => {
+    safe("github_list_workflow_runs", async ({ instance, owner, repo, branch, status, limit }) => {
       const res = (await api(
-        cfg,
+        pick(instance),
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs${qs({
           branch,
           status,
@@ -174,12 +198,12 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
     {
       title: "List GitHub Actions run jobs",
       description: "Lists jobs (and their steps' conclusions) for a workflow run — use to pinpoint a CI failure.",
-      inputSchema: { owner: z.string(), repo: z.string(), runId: z.number().int() },
+      inputSchema: { instance: instanceArg, owner: z.string(), repo: z.string(), runId: z.number().int() },
       annotations: { readOnlyHint: true },
     },
-    safe("github_workflow_run_jobs", async ({ owner, repo, runId }) => {
+    safe("github_workflow_run_jobs", async ({ instance, owner, repo, runId }) => {
       const res = (await api(
-        cfg,
+        pick(instance),
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}/jobs${qs({ per_page: 100 })}`,
       )) as { jobs?: Obj[] };
       return jsonResult(
@@ -205,6 +229,7 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
       title: "List GitHub issues",
       description: "Lists issues for a repo (excludes pull requests).",
       inputSchema: {
+        instance: instanceArg,
         owner: z.string(),
         repo: z.string(),
         state: z.enum(["open", "closed", "all"]).optional(),
@@ -213,9 +238,9 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
       },
       annotations: { readOnlyHint: true },
     },
-    safe("github_list_issues", async ({ owner, repo, state, labels, limit }) => {
+    safe("github_list_issues", async ({ instance, owner, repo, state, labels, limit }) => {
       const res = (await api(
-        cfg,
+        pick(instance),
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues${qs({
           state: state ?? "open",
           labels,
@@ -243,12 +268,12 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
     {
       title: "Get GitHub issue",
       description: "Full detail (body + metadata) of one issue.",
-      inputSchema: { owner: z.string(), repo: z.string(), number: z.number().int() },
+      inputSchema: { instance: instanceArg, owner: z.string(), repo: z.string(), number: z.number().int() },
       annotations: { readOnlyHint: true },
     },
-    safe("github_get_issue", async ({ owner, repo, number }) => {
+    safe("github_get_issue", async ({ instance, owner, repo, number }) => {
       const i = (await api(
-        cfg,
+        pick(instance),
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`,
       )) as Obj;
       return jsonResult({
@@ -269,6 +294,7 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
       title: "List GitHub commits",
       description: "Lists recent commits on a branch/ref.",
       inputSchema: {
+        instance: instanceArg,
         owner: z.string(),
         repo: z.string(),
         sha: z.string().optional().describe("Branch, tag or SHA to start from"),
@@ -276,9 +302,9 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
       },
       annotations: { readOnlyHint: true },
     },
-    safe("github_list_commits", async ({ owner, repo, sha, limit }) => {
+    safe("github_list_commits", async ({ instance, owner, repo, sha, limit }) => {
       const res = (await api(
-        cfg,
+        pick(instance),
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits${qs({ sha, per_page: limit ?? 20 })}`,
       )) as Obj[];
       return jsonResult(
@@ -301,6 +327,7 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
         description:
           "Triggers a workflow_dispatch run. `workflow` is the file name (e.g. ci.yml) or numeric ID. Enabled because MCP_ALLOW_WRITES=true.",
         inputSchema: {
+          instance: instanceArg,
           owner: z.string(),
           repo: z.string(),
           workflow: z.string().describe("Workflow file name or ID"),
@@ -309,9 +336,9 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
         },
         annotations: { destructiveHint: true },
       },
-      safe("github_dispatch_workflow", async ({ owner, repo, workflow, ref, inputs }) => {
+      safe("github_dispatch_workflow", async ({ instance, owner, repo, workflow, ref, inputs }) => {
         await api(
-          cfg,
+          pick(instance),
           `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`,
           { method: "POST", body: { ref, inputs }, raw: true },
         );
@@ -324,12 +351,12 @@ export function registerGitHub(server: McpServer, config: AppConfig): boolean {
       {
         title: "Re-run a GitHub Actions run (write)",
         description: "Re-runs a completed workflow run. Enabled because MCP_ALLOW_WRITES=true.",
-        inputSchema: { owner: z.string(), repo: z.string(), runId: z.number().int() },
+        inputSchema: { instance: instanceArg, owner: z.string(), repo: z.string(), runId: z.number().int() },
         annotations: { destructiveHint: true },
       },
-      safe("github_rerun_workflow", async ({ owner, repo, runId }) => {
+      safe("github_rerun_workflow", async ({ instance, owner, repo, runId }) => {
         await api(
-          cfg,
+          pick(instance),
           `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}/rerun`,
           { method: "POST", raw: true },
         );

@@ -1,14 +1,14 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { AppConfig, DatadogConfig } from "../config.js";
+import type { AppConfig, DatadogInstance } from "../config.js";
 import { httpRequest, jsonResult, qs, safe } from "../util.js";
 
-function api(cfg: DatadogConfig, path: string, opts: Parameters<typeof httpRequest>[1] = {}) {
-  return httpRequest(`https://api.${cfg.site}${path}`, {
+function api(inst: DatadogInstance, path: string, opts: Parameters<typeof httpRequest>[1] = {}) {
+  return httpRequest(`https://api.${inst.site}${path}`, {
     ...opts,
     headers: {
-      "dd-api-key": cfg.apiKey,
-      "dd-application-key": cfg.appKey,
+      "dd-api-key": inst.apiKey,
+      "dd-application-key": inst.appKey,
       ...(opts.headers ?? {}),
     },
   });
@@ -19,6 +19,26 @@ const nowSec = () => Math.floor(Date.now() / 1000);
 export function registerDatadog(server: McpServer, config: AppConfig): boolean {
   const cfg = config.integrations.datadog;
   if (!cfg) return false;
+  const { instances, primary } = cfg;
+
+  const names = Object.keys(instances);
+  const multi = names.length > 1;
+  const instanceArg = z
+    .enum(names as [string, ...string[]])
+    .optional()
+    .describe(
+      multi
+        ? `Which Datadog to target: ${names.join(", ")} (default: ${primary}).`
+        : `Datadog instance (only "${primary}" configured; optional).`,
+    );
+
+  function pick(instance?: string): DatadogInstance {
+    const inst = instances[instance ?? primary];
+    if (!inst) {
+      throw new Error(`Unknown Datadog instance "${instance}". Configured: ${names.join(", ")}.`);
+    }
+    return inst;
+  }
 
   server.registerTool(
     "datadog_query_metrics",
@@ -27,15 +47,16 @@ export function registerDatadog(server: McpServer, config: AppConfig): boolean {
       description:
         'Runs a timeseries metrics query, e.g. "avg:system.cpu.user{service:api} by {host}". Time range is relative minutes from now.',
       inputSchema: {
+        instance: instanceArg,
         query: z.string().describe("Datadog metrics query string"),
         fromMinutesAgo: z.number().int().min(1).max(10080).optional().describe("Range start (default 60)"),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("datadog_query_metrics", async ({ query, fromMinutesAgo }) => {
+    safe("datadog_query_metrics", async ({ instance, query, fromMinutesAgo }) => {
       const to = nowSec();
       const from = to - (fromMinutesAgo ?? 60) * 60;
-      const res = (await api(cfg, `/api/v1/query${qs({ from, to, query })}`)) as {
+      const res = (await api(pick(instance), `/api/v1/query${qs({ from, to, query })}`)) as {
         series?: Array<{ metric?: string; scope?: string; pointlist?: Array<[number, number]> }>;
         status?: string;
       };
@@ -56,14 +77,15 @@ export function registerDatadog(server: McpServer, config: AppConfig): boolean {
       title: "Search Datadog logs",
       description: 'Searches logs with Datadog query syntax, e.g. "service:api status:error".',
       inputSchema: {
+        instance: instanceArg,
         query: z.string().describe("Log search query"),
         fromMinutesAgo: z.number().int().min(1).max(10080).optional().describe("Range start (default 60)"),
         limit: z.number().int().min(1).max(100).optional().describe("Max log events (default 25)"),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("datadog_search_logs", async ({ query, fromMinutesAgo, limit }) => {
-      const res = (await api(cfg, "/api/v2/logs/events/search", {
+    safe("datadog_search_logs", async ({ instance, query, fromMinutesAgo, limit }) => {
+      const res = (await api(pick(instance), "/api/v2/logs/events/search", {
         method: "POST",
         body: {
           filter: { query, from: `now-${fromMinutesAgo ?? 60}m`, to: "now" },
@@ -90,18 +112,20 @@ export function registerDatadog(server: McpServer, config: AppConfig): boolean {
       title: "List Datadog monitors",
       description: "Lists monitors, optionally filtered by search query (name, tag, status).",
       inputSchema: {
+        instance: instanceArg,
         query: z.string().optional().describe('Monitor search, e.g. "status:alert" or a name fragment'),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("datadog_list_monitors", async ({ query }) => {
+    safe("datadog_list_monitors", async ({ instance, query }) => {
+      const inst = pick(instance);
       if (query) {
-        const res = (await api(cfg, `/api/v1/monitor/search${qs({ query, per_page: 50 })}`)) as {
+        const res = (await api(inst, `/api/v1/monitor/search${qs({ query, per_page: 50 })}`)) as {
           monitors?: Array<Record<string, unknown>>;
         };
         return jsonResult(res.monitors ?? []);
       }
-      const res = (await api(cfg, `/api/v1/monitor${qs({ page_size: 50 })}`)) as Array<Record<string, unknown>>;
+      const res = (await api(inst, `/api/v1/monitor${qs({ page_size: 50 })}`)) as Array<Record<string, unknown>>;
       return jsonResult(
         res.map((m) => ({
           id: m.id,
@@ -120,11 +144,12 @@ export function registerDatadog(server: McpServer, config: AppConfig): boolean {
       title: "Get Datadog monitor",
       description: "Fetches full monitor detail by ID, including query and current state.",
       inputSchema: {
+        instance: instanceArg,
         id: z.number().int().describe("Monitor ID"),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("datadog_get_monitor", async ({ id }) => jsonResult(await api(cfg, `/api/v1/monitor/${id}`))),
+    safe("datadog_get_monitor", async ({ instance, id }) => jsonResult(await api(pick(instance), `/api/v1/monitor/${id}`))),
   );
 
   server.registerTool(
@@ -133,16 +158,17 @@ export function registerDatadog(server: McpServer, config: AppConfig): boolean {
       title: "List Datadog events",
       description: "Lists events from the event stream (deploys, alerts, custom events).",
       inputSchema: {
+        instance: instanceArg,
         fromMinutesAgo: z.number().int().min(1).max(10080).optional().describe("Range start (default 60)"),
         priority: z.enum(["normal", "low"]).optional(),
         tags: z.string().optional().describe('Comma-separated tag filter, e.g. "service:api"'),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("datadog_list_events", async ({ fromMinutesAgo, priority, tags }) => {
+    safe("datadog_list_events", async ({ instance, fromMinutesAgo, priority, tags }) => {
       const end = nowSec();
       const start = end - (fromMinutesAgo ?? 60) * 60;
-      const res = (await api(cfg, `/api/v1/events${qs({ start, end, priority, tags })}`)) as {
+      const res = (await api(pick(instance), `/api/v1/events${qs({ start, end, priority, tags })}`)) as {
         events?: Array<Record<string, unknown>>;
       };
       return jsonResult(
@@ -165,6 +191,7 @@ export function registerDatadog(server: McpServer, config: AppConfig): boolean {
         title: "Post Datadog event (write)",
         description: "Posts an event to the Datadog event stream (e.g. deploy markers). Enabled because MCP_ALLOW_WRITES=true.",
         inputSchema: {
+          instance: instanceArg,
           title: z.string(),
           text: z.string(),
           alertType: z.enum(["error", "warning", "info", "success"]).optional(),
@@ -172,9 +199,9 @@ export function registerDatadog(server: McpServer, config: AppConfig): boolean {
         },
         annotations: { destructiveHint: false },
       },
-      safe("datadog_post_event", async ({ title, text, alertType, tags }) =>
+      safe("datadog_post_event", async ({ instance, title, text, alertType, tags }) =>
         jsonResult(
-          await api(cfg, "/api/v1/events", {
+          await api(pick(instance), "/api/v1/events", {
             method: "POST",
             body: { title, text, alert_type: alertType, tags },
           }),

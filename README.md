@@ -97,6 +97,10 @@ Everything is env-var driven; an integration is enabled **only** when its variab
 
 **Server settings:** `MCP_AUTH_TOKEN` (bearer auth — set it in production), `MCP_ALLOW_WRITES` (default `false`), `MCP_HTTP_PORT` (8080), `MCP_RATE_LIMIT_PER_MINUTE` (300), `MCP_SESSION_IDLE_TIMEOUT_MINUTES` (30), `MCP_MAX_RESULT_CHARS` (50000), `MCP_TRUST_PROXY`, `LOG_LEVEL`.
 
+**Multiple instances of one system.** The HTTP integrations — Grafana, Datadog, Prometheus, ArgoCD, GitLab, GitHub, Bitbucket, Jira — can each target several backends (e.g. prod + non-prod). Declare `<NAME>_INSTANCES=a,b` and give each name its own vars (`GRAFANA_PROD_URL`/`GRAFANA_PROD_TOKEN`, …); every tool then accepts an optional `instance` argument. `<NAME>_PRIMARY` (or the first listed name) is the default when a call omits it. The single-instance vars keep working unchanged and register as the `default` instance. See [.env.example](.env.example) for per-integration examples.
+
+**Outbound egress proxy.** Set `HTTP_PROXY`/`HTTPS_PROXY` (with optional `NO_PROXY`) and the server routes all outbound HTTP/REST calls — Grafana, Datadog, Prometheus, ArgoCD, GitLab, GitHub, Bitbucket, Jira — through the proxy. The proxy URL is never logged. **Not covered:** the database drivers (Postgres/MongoDB/Neo4j/Redis), Elasticsearch, Kubernetes and Playwright use their own transports and bypass this proxy.
+
 ## Tool catalog
 
 Write tools (⚡) are registered **only** when `MCP_ALLOW_WRITES=true`.

@@ -1,12 +1,12 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { AppConfig, GitlabConfig } from "../config.js";
+import type { AppConfig, GitlabInstance } from "../config.js";
 import { httpRequest, jsonResult, qs, safe, textResult } from "../util.js";
 
-function api(cfg: GitlabConfig, path: string, opts: Parameters<typeof httpRequest>[1] = {}) {
-  return httpRequest(`${cfg.url}/api/v4${path}`, {
+function api(inst: GitlabInstance, path: string, opts: Parameters<typeof httpRequest>[1] = {}) {
+  return httpRequest(`${inst.url}/api/v4${path}`, {
     ...opts,
-    headers: { "private-token": cfg.token, ...(opts.headers ?? {}) },
+    headers: { "private-token": inst.token, ...(opts.headers ?? {}) },
   });
 }
 
@@ -18,6 +18,26 @@ function pid(project: string): string {
 export function registerGitlab(server: McpServer, config: AppConfig): boolean {
   const cfg = config.integrations.gitlab;
   if (!cfg) return false;
+  const { instances, primary } = cfg;
+
+  const names = Object.keys(instances);
+  const multi = names.length > 1;
+  const instanceArg = z
+    .enum(names as [string, ...string[]])
+    .optional()
+    .describe(
+      multi
+        ? `Which GitLab to target: ${names.join(", ")} (default: ${primary}).`
+        : `GitLab instance (only "${primary}" configured; optional).`,
+    );
+
+  function pick(instance?: string): GitlabInstance {
+    const inst = instances[instance ?? primary];
+    if (!inst) {
+      throw new Error(`Unknown GitLab instance "${instance}". Configured: ${names.join(", ")}.`);
+    }
+    return inst;
+  }
 
   server.registerTool(
     "gitlab_list_projects",
@@ -25,14 +45,15 @@ export function registerGitlab(server: McpServer, config: AppConfig): boolean {
       title: "List GitLab projects",
       description: "Lists projects you're a member of, sorted by recent activity.",
       inputSchema: {
+        instance: instanceArg,
         search: z.string().optional().describe("Project name filter"),
         limit: z.number().int().min(1).max(100).optional(),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("gitlab_list_projects", async ({ search, limit }) => {
+    safe("gitlab_list_projects", async ({ instance, search, limit }) => {
       const res = (await api(
-        cfg,
+        pick(instance),
         `/projects${qs({
           search,
           membership: true,
@@ -60,6 +81,7 @@ export function registerGitlab(server: McpServer, config: AppConfig): boolean {
       title: "List GitLab pipelines",
       description: "Lists recent CI pipelines for a project.",
       inputSchema: {
+        instance: instanceArg,
         project: z.string().describe('Project ID or "group/project" path'),
         ref: z.string().optional().describe("Branch/tag filter"),
         status: z
@@ -69,9 +91,9 @@ export function registerGitlab(server: McpServer, config: AppConfig): boolean {
       },
       annotations: { readOnlyHint: true },
     },
-    safe("gitlab_list_pipelines", async ({ project, ref, status, limit }) => {
+    safe("gitlab_list_pipelines", async ({ instance, project, ref, status, limit }) => {
       const res = (await api(
-        cfg,
+        pick(instance),
         `/projects/${pid(project)}/pipelines${qs({ ref, status, per_page: limit ?? 20 })}`,
       )) as Array<Record<string, unknown>>;
       return jsonResult(
@@ -94,13 +116,14 @@ export function registerGitlab(server: McpServer, config: AppConfig): boolean {
       title: "List GitLab pipeline jobs",
       description: "Lists jobs in a pipeline with stage, status and duration — use to find failing jobs.",
       inputSchema: {
+        instance: instanceArg,
         project: z.string(),
         pipelineId: z.number().int(),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("gitlab_pipeline_jobs", async ({ project, pipelineId }) => {
-      const res = (await api(cfg, `/projects/${pid(project)}/pipelines/${pipelineId}/jobs${qs({ per_page: 100 })}`)) as Array<
+    safe("gitlab_pipeline_jobs", async ({ instance, project, pipelineId }) => {
+      const res = (await api(pick(instance), `/projects/${pid(project)}/pipelines/${pipelineId}/jobs${qs({ per_page: 100 })}`)) as Array<
         Record<string, unknown>
       >;
       return jsonResult(
@@ -123,14 +146,15 @@ export function registerGitlab(server: McpServer, config: AppConfig): boolean {
       title: "Get GitLab job log",
       description: "Fetches the trace/log of a CI job (tail of it) — use to diagnose failures.",
       inputSchema: {
+        instance: instanceArg,
         project: z.string(),
         jobId: z.number().int(),
         tailLines: z.number().int().min(10).max(2000).optional().describe("Lines from the end (default 200)"),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("gitlab_job_log", async ({ project, jobId, tailLines }) => {
-      const trace = (await api(cfg, `/projects/${pid(project)}/jobs/${jobId}/trace`, { raw: true })) as string;
+    safe("gitlab_job_log", async ({ instance, project, jobId, tailLines }) => {
+      const trace = (await api(pick(instance), `/projects/${pid(project)}/jobs/${jobId}/trace`, { raw: true })) as string;
       const lines = trace.split("\n");
       const tail = lines.slice(-(tailLines ?? 200)).join("\n");
       return textResult(tail || "(empty log)");
@@ -143,15 +167,16 @@ export function registerGitlab(server: McpServer, config: AppConfig): boolean {
       title: "List GitLab merge requests",
       description: "Lists merge requests for a project.",
       inputSchema: {
+        instance: instanceArg,
         project: z.string(),
         state: z.enum(["opened", "closed", "merged", "all"]).optional().describe("Default: opened"),
         limit: z.number().int().min(1).max(100).optional(),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("gitlab_list_merge_requests", async ({ project, state, limit }) => {
+    safe("gitlab_list_merge_requests", async ({ instance, project, state, limit }) => {
       const res = (await api(
-        cfg,
+        pick(instance),
         `/projects/${pid(project)}/merge_requests${qs({ state: state ?? "opened", per_page: limit ?? 20, order_by: "updated_at" })}`,
       )) as Array<Record<string, unknown>>;
       return jsonResult(
@@ -176,13 +201,14 @@ export function registerGitlab(server: McpServer, config: AppConfig): boolean {
       title: "Get GitLab merge request",
       description: "Full detail of one merge request including pipeline status and merge status.",
       inputSchema: {
+        instance: instanceArg,
         project: z.string(),
         iid: z.number().int().describe("MR IID (the number in the MR URL)"),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("gitlab_get_merge_request", async ({ project, iid }) => {
-      const mr = (await api(cfg, `/projects/${pid(project)}/merge_requests/${iid}`)) as Record<string, unknown>;
+    safe("gitlab_get_merge_request", async ({ instance, project, iid }) => {
+      const mr = (await api(pick(instance), `/projects/${pid(project)}/merge_requests/${iid}`)) as Record<string, unknown>;
       return jsonResult({
         iid: mr.iid,
         title: mr.title,
@@ -206,15 +232,16 @@ export function registerGitlab(server: McpServer, config: AppConfig): boolean {
         title: "Trigger GitLab pipeline (write)",
         description: "Creates a new pipeline on a ref. Enabled because MCP_ALLOW_WRITES=true.",
         inputSchema: {
+          instance: instanceArg,
           project: z.string(),
           ref: z.string().describe("Branch or tag to run on"),
           variables: z.record(z.string()).optional().describe("CI variables as key/value"),
         },
         annotations: { destructiveHint: true },
       },
-      safe("gitlab_trigger_pipeline", async ({ project, ref, variables }) =>
+      safe("gitlab_trigger_pipeline", async ({ instance, project, ref, variables }) =>
         jsonResult(
-          await api(cfg, `/projects/${pid(project)}/pipeline`, {
+          await api(pick(instance), `/projects/${pid(project)}/pipeline`, {
             method: "POST",
             body: {
               ref,
@@ -231,13 +258,14 @@ export function registerGitlab(server: McpServer, config: AppConfig): boolean {
         title: "Retry GitLab job (write)",
         description: "Retries a failed CI job. Enabled because MCP_ALLOW_WRITES=true.",
         inputSchema: {
+          instance: instanceArg,
           project: z.string(),
           jobId: z.number().int(),
         },
         annotations: { destructiveHint: true },
       },
-      safe("gitlab_retry_job", async ({ project, jobId }) =>
-        jsonResult(await api(cfg, `/projects/${pid(project)}/jobs/${jobId}/retry`, { method: "POST" })),
+      safe("gitlab_retry_job", async ({ instance, project, jobId }) =>
+        jsonResult(await api(pick(instance), `/projects/${pid(project)}/jobs/${jobId}/retry`, { method: "POST" })),
       ),
     );
   }

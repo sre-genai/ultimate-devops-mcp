@@ -5,6 +5,7 @@
 // corrupt the JSON-RPC channel on stdout.
 //
 // Run:  node dist/stdio.js   (or the `ultimate-devops-mcp-stdio` bin)
+import { setGlobalDispatcher, EnvHttpProxyAgent } from "undici";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig, enabledIntegrationNames } from "./config.js";
 import { logger } from "./logger.js";
@@ -12,6 +13,14 @@ import { closeAll, setMaxResultChars } from "./util.js";
 import { createMcpServer, SERVER_NAME, SERVER_VERSION } from "./server.js";
 
 async function main(): Promise<void> {
+  // Route outbound fetch()/undici traffic through HTTP_PROXY/HTTPS_PROXY when set
+  // (never logging the proxy URL). Covers the HTTP/REST integrations only — DB
+  // drivers, Elasticsearch, Kubernetes and Playwright use their own transports.
+  if (["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"].some((k) => process.env[k])) {
+    setGlobalDispatcher(new EnvHttpProxyAgent());
+    logger.info("outbound HTTP proxy enabled (HTTP_PROXY/HTTPS_PROXY)");
+  }
+
   const config = loadConfig();
   setMaxResultChars(config.maxResultChars);
 

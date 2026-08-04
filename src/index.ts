@@ -1,12 +1,25 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import express, { type NextFunction, type Request, type Response } from "express";
 import rateLimit from "express-rate-limit";
+import { setGlobalDispatcher, EnvHttpProxyAgent } from "undici";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, enabledIntegrationNames } from "./config.js";
 import { logger } from "./logger.js";
 import { closeAll, setMaxResultChars } from "./util.js";
 import { createMcpServer, SERVER_NAME, SERVER_VERSION } from "./server.js";
+
+// Outbound egress proxy: when HTTP_PROXY/HTTPS_PROXY is set (any case), route all
+// fetch()/undici traffic through it. Done at boot, before any integration makes a
+// request. EnvHttpProxyAgent reads the proxy URLs and NO_PROXY from the
+// environment itself. This covers the HTTP/REST integrations (Grafana, Datadog,
+// Prometheus, ArgoCD, GitLab, GitHub, Bitbucket, Jira) only — the DB drivers,
+// Elasticsearch, Kubernetes and Playwright use their own transports and are NOT
+// proxied here. The proxy URL is never logged (it can contain credentials).
+if (["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"].some((k) => process.env[k])) {
+  setGlobalDispatcher(new EnvHttpProxyAgent());
+  logger.info("outbound HTTP proxy enabled (HTTP_PROXY/HTTPS_PROXY)");
+}
 
 const config = loadConfig();
 setMaxResultChars(config.maxResultChars);
