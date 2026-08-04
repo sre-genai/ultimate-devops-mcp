@@ -3,12 +3,12 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
   AppConfig,
-  ArgoCDConfig,
-  DatadogConfig,
-  GitHubConfig,
-  GitlabConfig,
+  ArgoCDInstance,
+  DatadogInstance,
+  GitHubInstance,
+  GitlabInstance,
   KubernetesConfig,
-  PrometheusConfig,
+  PrometheusInstance,
 } from "../config.js";
 import { httpRequest, jsonResult, qs, safe } from "../util.js";
 
@@ -123,7 +123,7 @@ async function gatherKubernetes(
 
 // --- Alerts (Prometheus + Datadog) ----------------------------------------
 
-async function gatherPrometheusAlerts(cfg: PrometheusConfig, service: string): Promise<unknown> {
+async function gatherPrometheusAlerts(cfg: PrometheusInstance, service: string): Promise<unknown> {
   const res = (await httpRequest(`${cfg.url}/api/v1/alerts`, {
     headers: cfg.bearerToken ? { authorization: `Bearer ${cfg.bearerToken}` } : {},
   })) as { data?: { alerts?: Array<Record<string, unknown>> } };
@@ -139,7 +139,7 @@ async function gatherPrometheusAlerts(cfg: PrometheusConfig, service: string): P
     }));
 }
 
-async function gatherDatadogAlerts(cfg: DatadogConfig, service: string): Promise<unknown> {
+async function gatherDatadogAlerts(cfg: DatadogInstance, service: string): Promise<unknown> {
   const res = (await httpRequest(
     `https://api.${cfg.site}/api/v1/monitor/search${qs({ query: `status:alert ${service}`, per_page: 50 })}`,
     { headers: { "dd-api-key": cfg.apiKey, "dd-application-key": cfg.appKey } },
@@ -164,11 +164,11 @@ interface ArgoApp {
   };
 }
 
-function argo(cfg: ArgoCDConfig, path: string): Promise<unknown> {
+function argo(cfg: ArgoCDInstance, path: string): Promise<unknown> {
   return httpRequest(`${cfg.url}${path}`, { headers: { authorization: `Bearer ${cfg.token}` } });
 }
 
-async function gatherArgoCD(cfg: ArgoCDConfig, service: string): Promise<unknown> {
+async function gatherArgoCD(cfg: ArgoCDInstance, service: string): Promise<unknown> {
   // Prefer an exact-name match; fall back to a name search and take the first.
   let app: ArgoApp | undefined;
   try {
@@ -200,7 +200,7 @@ async function gatherArgoCD(cfg: ArgoCDConfig, service: string): Promise<unknown
 
 // --- CI (GitLab + GitHub) --------------------------------------------------
 
-async function gatherGitlabCI(cfg: GitlabConfig, service: string): Promise<unknown> {
+async function gatherGitlabCI(cfg: GitlabInstance, service: string): Promise<unknown> {
   const headers = { "private-token": cfg.token };
   const projects = (await httpRequest(
     `${cfg.url}/api/v4/projects${qs({ search: service, membership: true, per_page: 1, order_by: "last_activity_at", simple: true })}`,
@@ -228,7 +228,7 @@ async function gatherGitlabCI(cfg: GitlabConfig, service: string): Promise<unkno
   };
 }
 
-function gh(cfg: GitHubConfig, path: string): Promise<unknown> {
+function gh(cfg: GitHubInstance, path: string): Promise<unknown> {
   return httpRequest(`${cfg.baseUrl}${path}`, {
     headers: {
       authorization: `Bearer ${cfg.token}`,
@@ -238,7 +238,7 @@ function gh(cfg: GitHubConfig, path: string): Promise<unknown> {
   });
 }
 
-async function gatherGithubCI(cfg: GitHubConfig, service: string): Promise<unknown> {
+async function gatherGithubCI(cfg: GitHubInstance, service: string): Promise<unknown> {
   // Accept "owner/repo" directly, otherwise search for the best-matching repo.
   let fullName: string | undefined;
   if (service.includes("/")) {
@@ -318,14 +318,14 @@ export function registerInvestigate(server: McpServer, config: AppConfig): boole
       const alerts: Record<string, unknown> = {};
       if (integrations.prometheus) {
         try {
-          alerts.prometheus = await gatherPrometheusAlerts(integrations.prometheus, service);
+          alerts.prometheus = await gatherPrometheusAlerts(integrations.prometheus.instances[integrations.prometheus.primary], service);
         } catch (err) {
           fail("prometheus", err);
         }
       }
       if (integrations.datadog) {
         try {
-          alerts.datadog = await gatherDatadogAlerts(integrations.datadog, service);
+          alerts.datadog = await gatherDatadogAlerts(integrations.datadog.instances[integrations.datadog.primary], service);
         } catch (err) {
           fail("datadog", err);
         }
@@ -334,7 +334,7 @@ export function registerInvestigate(server: McpServer, config: AppConfig): boole
 
       if (integrations.argocd) {
         try {
-          gathered.argocd = await gatherArgoCD(integrations.argocd, service);
+          gathered.argocd = await gatherArgoCD(integrations.argocd.instances[integrations.argocd.primary], service);
         } catch (err) {
           fail("argocd", err);
         }
@@ -344,14 +344,14 @@ export function registerInvestigate(server: McpServer, config: AppConfig): boole
       const ci: Record<string, unknown> = {};
       if (integrations.gitlab) {
         try {
-          ci.gitlab = await gatherGitlabCI(integrations.gitlab, service);
+          ci.gitlab = await gatherGitlabCI(integrations.gitlab.instances[integrations.gitlab.primary], service);
         } catch (err) {
           fail("gitlab", err);
         }
       }
       if (integrations.github) {
         try {
-          ci.github = await gatherGithubCI(integrations.github, service);
+          ci.github = await gatherGithubCI(integrations.github.instances[integrations.github.primary], service);
         } catch (err) {
           fail("github", err);
         }

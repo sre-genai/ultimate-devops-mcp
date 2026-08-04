@@ -85,15 +85,15 @@ app.get("/healthz", (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
 app.get("/readyz", (_req, res) => {
-  // Configured state only — no live network pings to backends.
-  const integrations = enabledIntegrationNames(config);
+  // Configured state only — no live network pings to backends. Report a COUNT,
+  // not names: don't enumerate the attack surface to unauthenticated callers.
+  // The authenticated devops_status tool exposes the integration names.
   res.status(200).json({
     status: "ok",
     server: SERVER_NAME,
     version: SERVER_VERSION,
     sessions: sessions.size,
-    writesAllowed: config.allowWrites,
-    integrations: { count: integrations.length, names: integrations },
+    integrations: enabledIntegrationNames(config).length,
   });
 });
 
