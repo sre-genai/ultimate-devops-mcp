@@ -18,6 +18,11 @@ import { registerBitbucket } from "./integrations/bitbucket.js";
 import { registerJira } from "./integrations/jira.js";
 import { registerPlaywright } from "./integrations/playwright.js";
 import { registerTemporal } from "./integrations/temporal.js";
+import { registerPagerDuty } from "./integrations/pagerduty.js";
+import { registerSentry } from "./integrations/sentry.js";
+import { registerJenkins } from "./integrations/jenkins.js";
+import { registerSlack } from "./integrations/slack.js";
+import { registerVault } from "./integrations/vault.js";
 
 export const SERVER_NAME = "ultimate-devops-mcp";
 export const SERVER_VERSION = "1.0.0";
@@ -42,6 +47,11 @@ const REGISTRARS: Record<string, Registrar> = {
   jira: registerJira,
   playwright: registerPlaywright,
   temporal: registerTemporal,
+  pagerduty: registerPagerDuty,
+  sentry: registerSentry,
+  jenkins: registerJenkins,
+  slack: registerSlack,
+  vault: registerVault,
 };
 
 /**

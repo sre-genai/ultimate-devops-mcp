@@ -104,6 +104,31 @@ export interface TemporalConfig {
   serverName?: string;
 }
 
+export interface PagerDutyConfig {
+  baseUrl: string;
+  apiToken: string;
+  /** Required by the REST API on incident create/modify (the "From" header). */
+  fromEmail?: string;
+}
+export interface SentryConfig {
+  baseUrl: string;
+  token: string;
+  org: string;
+}
+export interface JenkinsConfig {
+  baseUrl: string;
+  authHeader: string;
+}
+export interface SlackConfig {
+  botToken: string;
+}
+export interface VaultConfig {
+  addr: string;
+  token: string;
+  /** Default KV v2 mount used when a tool call omits `mount`. */
+  kvMount: string;
+}
+
 export interface Integrations {
   postgres?: PostgresConfig;
   mongo?: MongoConfig;
@@ -122,6 +147,11 @@ export interface Integrations {
   jira?: JiraConfig;
   playwright?: PlaywrightConfig;
   temporal?: TemporalConfig;
+  pagerduty?: PagerDutyConfig;
+  sentry?: SentryConfig;
+  jenkins?: JenkinsConfig;
+  slack?: SlackConfig;
+  vault?: VaultConfig;
 }
 
 export interface AppConfig {
@@ -434,6 +464,65 @@ export function loadConfig(): AppConfig {
     };
     if (integrations.temporal.tlsCert && !integrations.temporal.tlsKey) {
       errors.push("TEMPORAL_TLS_CERT is set but TEMPORAL_TLS_KEY is missing (mTLS needs both)");
+    }
+  }
+
+  // --- PagerDuty (REST API v2: token auth) ---
+  const pdToken = env("PAGERDUTY_API_TOKEN");
+  if (pdToken) {
+    integrations.pagerduty = {
+      baseUrl: (env("PAGERDUTY_API_URL") ?? "https://api.pagerduty.com").replace(/\/+$/, ""),
+      apiToken: pdToken,
+      fromEmail: env("PAGERDUTY_FROM_EMAIL"),
+    };
+  }
+
+  // --- Sentry (self-hosted or SaaS; org required) ---
+  const sentryToken = env("SENTRY_TOKEN");
+  if (sentryToken) {
+    const org = env("SENTRY_ORG");
+    if (!org) {
+      errors.push("SENTRY_TOKEN is set but SENTRY_ORG is missing");
+    } else {
+      integrations.sentry = {
+        baseUrl: (env("SENTRY_URL") ?? "https://sentry.io").replace(/\/+$/, ""),
+        token: sentryToken,
+        org,
+      };
+    }
+  }
+
+  // --- Jenkins (basic auth: user + API token) ---
+  const jenkinsUrl = env("JENKINS_URL");
+  if (jenkinsUrl) {
+    const user = env("JENKINS_USER");
+    const token = env("JENKINS_TOKEN");
+    if (!user || !token) {
+      errors.push("JENKINS_URL is set but JENKINS_USER/JENKINS_TOKEN are missing");
+    } else {
+      integrations.jenkins = {
+        baseUrl: jenkinsUrl.replace(/\/+$/, ""),
+        authHeader: `Basic ${Buffer.from(`${user}:${token}`).toString("base64")}`,
+      };
+    }
+  }
+
+  // --- Slack (bot token) ---
+  const slackToken = env("SLACK_BOT_TOKEN");
+  if (slackToken) integrations.slack = { botToken: slackToken };
+
+  // --- Vault (token auth; read-mostly KV v2) ---
+  const vaultAddr = env("VAULT_ADDR");
+  if (vaultAddr) {
+    const token = env("VAULT_TOKEN");
+    if (!token) {
+      errors.push("VAULT_ADDR is set but VAULT_TOKEN is missing");
+    } else {
+      integrations.vault = {
+        addr: vaultAddr.replace(/\/+$/, ""),
+        token,
+        kvMount: env("VAULT_KV_MOUNT") ?? "secret",
+      };
     }
   }
 
