@@ -1,4 +1,5 @@
 import "dotenv/config";
+import type { KeyIdentity } from "./audit.js";
 
 export interface PostgresConfig {
   connectionString: string;
@@ -183,7 +184,12 @@ export interface AppConfig {
   host: string;
   port: number;
   authToken?: string;
+  /** Scoped API keys: token secret -> {name, tools?, allowWrites}. The bare
+   * MCP_AUTH_TOKEN (authToken) remains a separate full-access key. */
+  apiKeys?: Record<string, KeyIdentity>;
   allowWrites: boolean;
+  /** When true, write/mutating tools return a preview instead of executing. */
+  writeDryRun: boolean;
   logLevel: string;
   rateLimitPerMinute: number;
   sessionIdleTimeoutMs: number;
@@ -605,6 +611,38 @@ export function loadConfig(): AppConfig {
     if (servers.length > 0) federation = { servers };
   }
 
+  // --- Scoped API keys (optional; MCP_AUTH_TOKEN stays a full-access key) ---
+  // MCP_API_KEYS is a JSON object mapping each token secret to a scope:
+  //   {"tok_ci":{"name":"ci","tools":["postgres_query"],"allowWrites":false}}
+  let apiKeys: Record<string, KeyIdentity> | undefined;
+  const rawKeys = env("MCP_API_KEYS");
+  if (rawKeys) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawKeys);
+    } catch {
+      errors.push("MCP_API_KEYS is not valid JSON (expected an object mapping token -> scope)");
+    }
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const map: Record<string, KeyIdentity> = {};
+      for (const [secret, spec] of Object.entries(parsed as Record<string, unknown>)) {
+        if (!secret || typeof spec !== "object" || spec === null || Array.isArray(spec)) {
+          errors.push(`MCP_API_KEYS["${secret}"] must be an object { name, tools?, allowWrites? }`);
+          continue;
+        }
+        const s = spec as { name?: unknown; tools?: unknown; allowWrites?: unknown };
+        map[secret] = {
+          name: typeof s.name === "string" && s.name.trim() ? s.name.trim() : "unnamed",
+          tools: Array.isArray(s.tools) ? s.tools.filter((t): t is string => typeof t === "string") : undefined,
+          allowWrites: s.allowWrites === true,
+        };
+      }
+      if (Object.keys(map).length > 0) apiKeys = map;
+    } else if (parsed !== undefined) {
+      errors.push("MCP_API_KEYS must be a JSON object mapping token -> scope");
+    }
+  }
+
   if (errors.length > 0) {
     throw new Error(`Configuration errors:\n  - ${errors.join("\n  - ")}`);
   }
@@ -617,7 +655,9 @@ export function loadConfig(): AppConfig {
     host: env("MCP_HTTP_HOST") ?? "127.0.0.1",
     port: envInt("MCP_HTTP_PORT", 8080),
     authToken: env("MCP_AUTH_TOKEN"),
+    apiKeys,
     allowWrites: envBool("MCP_ALLOW_WRITES"),
+    writeDryRun: envBool("MCP_WRITE_DRYRUN"),
     logLevel: env("LOG_LEVEL") ?? "info",
     rateLimitPerMinute: envInt("MCP_RATE_LIMIT_PER_MINUTE", 300),
     sessionIdleTimeoutMs: envInt("MCP_SESSION_IDLE_TIMEOUT_MINUTES", 30) * 60_000,
