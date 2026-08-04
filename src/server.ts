@@ -18,6 +18,7 @@ import { registerBitbucket } from "./integrations/bitbucket.js";
 import { registerJira } from "./integrations/jira.js";
 import { registerPlaywright } from "./integrations/playwright.js";
 import { registerTemporal } from "./integrations/temporal.js";
+import { registerInvestigate } from "./tools/investigate.js";
 
 export const SERVER_NAME = "ultimate-devops-mcp";
 export const SERVER_VERSION = "1.0.0";
@@ -79,6 +80,10 @@ export function createMcpServer(config: AppConfig): { server: McpServer; enabled
       }),
     ),
   );
+
+  // Cross-integration meta-tool: correlates one service's signals across every
+  // enabled integration in a single call.
+  registerInvestigate(server, config);
 
   return { server, enabled };
 }

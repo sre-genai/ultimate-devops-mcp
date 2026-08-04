@@ -103,7 +103,7 @@ Write tools (⚡) are registered **only** when `MCP_ALLOW_WRITES=true`.
 
 | Integration | Tools |
 |---|---|
-| **Meta** | `devops_status` |
+| **Meta** | `devops_status`, `devops_investigate` |
 | **Postgres** | `postgres_list_databases`, `postgres_query` (read-only tx), `postgres_list_tables`, `postgres_describe_table`, ⚡`postgres_execute` — all but `list_databases` take an optional `database` to target any DB on the instance |
 | **MongoDB** | `mongo_list_databases`, `mongo_list_collections`, `mongo_find`, `mongo_aggregate`, `mongo_count`, ⚡`mongo_insert`, ⚡`mongo_update` |
 | **Neo4j** | `neo4j_read_cypher`, `neo4j_schema`, ⚡`neo4j_write_cypher` |
@@ -120,7 +120,24 @@ Write tools (⚡) are registered **only** when `MCP_ALLOW_WRITES=true`.
 | **Bitbucket** | `bitbucket_list_repositories`, `bitbucket_list_pull_requests`, `bitbucket_get_pull_request`, `bitbucket_list_pipelines`, `bitbucket_get_pipeline`, ⚡`bitbucket_trigger_pipeline` |
 | **Browser** | `browser_navigate`, `browser_screenshot`, `browser_extract` |
 
+## Cross-integration investigation
+
+`devops_investigate` is the meta-tool that makes this a gateway rather than 17 separate wrappers. Give it a service name and it correlates signals across **every enabled integration in a single call** — instead of you chaining a dozen tool calls by hand:
+
+- **Kubernetes** — pods matching the service (by name or `app`/`app.kubernetes.io/name` labels), recent warning events involving them, and a tail of the first pod's logs (previous instance if it has restarts)
+- **Prometheus / Datadog** — currently firing alerts (or alerting monitors) that mention the service
+- **ArgoCD** — the matching application's sync status, health, and last operation
+- **GitLab / GitHub** — the most recent pipeline / workflow run for the matching project/repo
+
+```jsonc
+{ "service": "checkout", "namespace": "prod", "sinceMinutes": 30 }
+```
+
+It returns a single structured object — `{ service, gathered: { kubernetes?, alerts?, argocd?, ci? }, errors: [...] }`. It **only surfaces signals for the integrations that are enabled** on this server (the `queried` field lists which were reached), and each source is gathered independently: if one backend errors it is recorded under `errors` rather than failing the whole investigation, so you always get a partial picture. Output is capped by the same truncation limits as every other tool.
+
 ## Example prompts
+
+> "Investigate the `checkout` service — pull together its pods, alerts, ArgoCD sync state and latest CI run."
 
 > "Which ArgoCD apps are out of sync, and what does the resource tree say is unhealthy?"
 
