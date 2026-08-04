@@ -1,5 +1,6 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { logger } from "./logger.js";
+import { record as recordMetric } from "./metrics.js";
 
 let maxResultChars = 50_000;
 
@@ -65,11 +66,19 @@ export function safe<Args>(
   fn: (args: Args) => Promise<CallToolResult>,
 ): (args: Args) => Promise<CallToolResult> {
   return async (args: Args) => {
+    // --- metrics: record duration + error for every tool dispatch ---
+    const startedAt = Date.now();
+    let isError = false;
     try {
-      return await fn(args);
+      const result = await fn(args);
+      isError = result.isError === true;
+      return result;
     } catch (err) {
+      isError = true;
       logger.warn({ tool: name, err: err instanceof Error ? err.message : String(err) }, "tool call failed");
       return errorResult(err);
+    } finally {
+      recordMetric(name, Date.now() - startedAt, isError);
     }
   };
 }
