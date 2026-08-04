@@ -95,7 +95,32 @@ Everything is env-var driven; an integration is enabled **only** when its variab
 | Bitbucket | `BITBUCKET_TOKEN` **or** `BITBUCKET_USERNAME`+`BITBUCKET_APP_PASSWORD` (+ `BITBUCKET_WORKSPACE`) |
 | Playwright | `PLAYWRIGHT_ENABLED=true` (+ `npx playwright install chromium`) |
 
-**Server settings:** `MCP_AUTH_TOKEN` (bearer auth — set it in production), `MCP_ALLOW_WRITES` (default `false`), `MCP_HTTP_PORT` (8080), `MCP_RATE_LIMIT_PER_MINUTE` (300), `MCP_SESSION_IDLE_TIMEOUT_MINUTES` (30), `MCP_MAX_RESULT_CHARS` (50000), `MCP_TRUST_PROXY`, `LOG_LEVEL`.
+**Server settings:** `MCP_AUTH_TOKEN` (bearer auth — set it in production), `MCP_API_KEYS` (scoped keys, see below), `MCP_ALLOW_WRITES` (default `false`), `MCP_WRITE_DRYRUN` (default `false`), `MCP_HTTP_PORT` (8080), `MCP_RATE_LIMIT_PER_MINUTE` (300), `MCP_SESSION_IDLE_TIMEOUT_MINUTES` (30), `MCP_MAX_RESULT_CHARS` (50000), `MCP_TRUST_PROXY`, `LOG_LEVEL`.
+
+## Auth & governance
+
+Three layers let you expose one server to multiple callers with different privileges, keep a tamper-evident record of every call, and rehearse writes safely.
+
+**Scoped API keys** — `MCP_AUTH_TOKEN` remains a single full-access bearer key (unchanged). For finer control, set `MCP_API_KEYS` to a JSON object mapping each token secret to a scope:
+
+```bash
+MCP_API_KEYS='{
+  "tok_ci_readonly":  { "name": "ci",       "tools": ["postgres_query", "prometheus_query"], "allowWrites": false },
+  "tok_oncall_write": { "name": "oncall",                                                     "allowWrites": true }
+}'
+```
+
+- `name` — label used in audit logs (never the secret).
+- `tools` — optional allowlist of tool names this key may call; omit for all tools.
+- `allowWrites` — whether the key may call write/mutating tools (in addition to the server-wide `MCP_ALLOW_WRITES`, which must also be on for write tools to exist).
+
+The presented bearer is matched constant-time against `MCP_AUTH_TOKEN` and every `MCP_API_KEYS` entry; an unknown token is rejected with `401`. A call to a tool outside the key's scope, or a write from a key without `allowWrites`, is rejected and audited as `denied`. When either `MCP_AUTH_TOKEN` or `MCP_API_KEYS` is set the endpoint is authenticated.
+
+**Audit logging** — every tool invocation emits one structured pino log line under the `audit` key: `{ tool, write, key, sessionId, outcome, reason?, durationMs, ts }` where `outcome` is `allowed` / `denied` / `dry-run` / `error`. Records carry no tool arguments and no secrets — only who called what, when, and how it resolved. Ship stdout to your log pipeline to retain the trail.
+
+**Write dry-run** — set `MCP_WRITE_DRYRUN=true` and every write/mutating tool returns a preview object (`{ dryRun: true, tool, note, args }`) describing what *would* happen, without touching any backend. Read tools are unaffected. Use it to rehearse a change set or to run an agent against production with writes armed but disarmed.
+
+Enforcement happens once, centrally, at tool dispatch (`installGovernance` in `src/server.ts` wraps `registerTool`), so it applies uniformly to every current and future integration over both HTTP and stdio.
 
 ## Tool catalog
 
@@ -158,7 +183,7 @@ curl -sS -X POST http://localhost:8080/mcp \
 
 ## Security notes
 
-- **Set `MCP_AUTH_TOKEN`.** Without it the endpoint is open (the server logs a loud warning).
+- **Set `MCP_AUTH_TOKEN` (or `MCP_API_KEYS`).** Without either, the endpoint is open (the server logs a loud warning). See [Auth & governance](#auth--governance) for scoped keys, audit logging, and write dry-run.
 - **Run behind TLS** (ingress/reverse proxy). Set `MCP_TRUST_PROXY=true` behind a load balancer.
 - **Leave `MCP_ALLOW_WRITES=false`** unless you explicitly need mutations; read tools are designed to be safe (read-only transactions, SCAN instead of KEYS, bounded results).
 - **Scope credentials minimally** — e.g. a read-only Postgres role, a Grafana service account with Viewer, a GitLab token with `read_api` when writes are off.
@@ -166,8 +191,9 @@ curl -sS -X POST http://localhost:8080/mcp \
 
 ## Architecture
 
-- `src/index.ts` — Express app, Streamable HTTP session management, auth, rate limit, health, shutdown
-- `src/server.ts` — builds the `McpServer` and registers enabled integrations
+- `src/index.ts` — Express app, Streamable HTTP session management, auth (bearer + scoped keys), rate limit, health, shutdown
+- `src/server.ts` — builds the `McpServer`, registers enabled integrations, and installs the governance guard (scope enforcement, audit, write dry-run)
+- `src/audit.ts` — key-identity types, request-scoped context (AsyncLocalStorage), and the structured audit logger
 - `src/integrations/*.ts` — one file per system; lazy singleton clients shared across sessions
 - Adding an integration = one new file exporting `register<Name>(server, config)` + a config block. PRs welcome.
 
