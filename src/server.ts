@@ -26,6 +26,7 @@ import { registerSentry } from "./integrations/sentry.js";
 import { registerJenkins } from "./integrations/jenkins.js";
 import { registerSlack } from "./integrations/slack.js";
 import { registerVault } from "./integrations/vault.js";
+import { registerInvestigate } from "./tools/investigate.js";
 
 export const SERVER_NAME = "ultimate-devops-mcp";
 export const SERVER_VERSION = "1.0.0";
@@ -147,6 +148,10 @@ export async function createMcpServer(
       }),
     ),
   );
+
+  // Cross-integration meta-tool: correlates one service's signals across every
+  // enabled integration in a single call.
+  registerInvestigate(server, config);
 
   return { server, enabled };
 }
