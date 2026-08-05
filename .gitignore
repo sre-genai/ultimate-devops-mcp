@@ -9,4 +9,3 @@ udm.env
 udm-sealed.yaml
 *.log
 .DS_Store
-.claude/worktrees/
