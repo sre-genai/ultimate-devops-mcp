@@ -1,12 +1,12 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { AppConfig, ArgoCDConfig } from "../config.js";
+import type { AppConfig, ArgoCDInstance } from "../config.js";
 import { httpRequest, jsonResult, qs, safe } from "../util.js";
 
-function api(cfg: ArgoCDConfig, path: string, opts: Parameters<typeof httpRequest>[1] = {}) {
-  return httpRequest(`${cfg.url}${path}`, {
+function api(inst: ArgoCDInstance, path: string, opts: Parameters<typeof httpRequest>[1] = {}) {
+  return httpRequest(`${inst.url}${path}`, {
     ...opts,
-    headers: { authorization: `Bearer ${cfg.token}`, ...(opts.headers ?? {}) },
+    headers: { authorization: `Bearer ${inst.token}`, ...(opts.headers ?? {}) },
   });
 }
 
@@ -24,6 +24,26 @@ interface ArgoApp {
 export function registerArgoCD(server: McpServer, config: AppConfig): boolean {
   const cfg = config.integrations.argocd;
   if (!cfg) return false;
+  const { instances, primary } = cfg;
+
+  const names = Object.keys(instances);
+  const multi = names.length > 1;
+  const instanceArg = z
+    .enum(names as [string, ...string[]])
+    .optional()
+    .describe(
+      multi
+        ? `Which ArgoCD to target: ${names.join(", ")} (default: ${primary}).`
+        : `ArgoCD instance (only "${primary}" configured; optional).`,
+    );
+
+  function pick(instance?: string): ArgoCDInstance {
+    const inst = instances[instance ?? primary];
+    if (!inst) {
+      throw new Error(`Unknown ArgoCD instance "${instance}". Configured: ${names.join(", ")}.`);
+    }
+    return inst;
+  }
 
   server.registerTool(
     "argocd_list_applications",
@@ -31,13 +51,14 @@ export function registerArgoCD(server: McpServer, config: AppConfig): boolean {
       title: "List ArgoCD applications",
       description: "Lists applications with sync status, health, project and target revision.",
       inputSchema: {
+        instance: instanceArg,
         search: z.string().optional().describe("Name filter"),
         project: z.string().optional(),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("argocd_list_applications", async ({ search, project }) => {
-      const res = (await api(cfg, `/api/v1/applications${qs({ search, projects: project })}`)) as {
+    safe("argocd_list_applications", async ({ instance, search, project }) => {
+      const res = (await api(pick(instance), `/api/v1/applications${qs({ search, projects: project })}`)) as {
         items?: ArgoApp[];
       };
       return jsonResult(
@@ -60,12 +81,13 @@ export function registerArgoCD(server: McpServer, config: AppConfig): boolean {
       title: "Get ArgoCD application",
       description: "Full detail for one application: sync/health status, last operation, source and destination.",
       inputSchema: {
+        instance: instanceArg,
         name: z.string(),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("argocd_get_application", async ({ name }) => {
-      const a = (await api(cfg, `/api/v1/applications/${encodeURIComponent(name)}`)) as ArgoApp;
+    safe("argocd_get_application", async ({ instance, name }) => {
+      const a = (await api(pick(instance), `/api/v1/applications/${encodeURIComponent(name)}`)) as ArgoApp;
       return jsonResult({
         name: a.metadata?.name,
         project: a.spec?.project,
@@ -90,13 +112,14 @@ export function registerArgoCD(server: McpServer, config: AppConfig): boolean {
       title: "ArgoCD application resource tree",
       description: "Lists the Kubernetes resources managed by an application with per-resource health.",
       inputSchema: {
+        instance: instanceArg,
         name: z.string(),
         onlyUnhealthy: z.boolean().optional().describe("Only resources that are not Healthy"),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("argocd_app_resources", async ({ name, onlyUnhealthy }) => {
-      const res = (await api(cfg, `/api/v1/applications/${encodeURIComponent(name)}/resource-tree`)) as {
+    safe("argocd_app_resources", async ({ instance, name, onlyUnhealthy }) => {
+      const res = (await api(pick(instance), `/api/v1/applications/${encodeURIComponent(name)}/resource-tree`)) as {
         nodes?: Array<{
           kind?: string;
           name?: string;
@@ -127,12 +150,13 @@ export function registerArgoCD(server: McpServer, config: AppConfig): boolean {
       title: "ArgoCD deployment history",
       description: "Lists recent deployment history (revisions) for an application.",
       inputSchema: {
+        instance: instanceArg,
         name: z.string(),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("argocd_app_history", async ({ name }) => {
-      const a = (await api(cfg, `/api/v1/applications/${encodeURIComponent(name)}`)) as ArgoApp;
+    safe("argocd_app_history", async ({ instance, name }) => {
+      const a = (await api(pick(instance), `/api/v1/applications/${encodeURIComponent(name)}`)) as ArgoApp;
       const history = (a.status?.history ?? []) as Array<Record<string, unknown>>;
       return jsonResult(
         history
@@ -155,6 +179,7 @@ export function registerArgoCD(server: McpServer, config: AppConfig): boolean {
         title: "Sync ArgoCD application (write)",
         description: "Triggers a sync (deploy) of an application. Supports dry-run. Enabled because MCP_ALLOW_WRITES=true.",
         inputSchema: {
+          instance: instanceArg,
           name: z.string(),
           revision: z.string().optional().describe("Git revision to sync to (default: configured target)"),
           prune: z.boolean().optional().describe("Prune resources no longer in git"),
@@ -162,9 +187,9 @@ export function registerArgoCD(server: McpServer, config: AppConfig): boolean {
         },
         annotations: { destructiveHint: true },
       },
-      safe("argocd_sync_application", async ({ name, revision, prune, dryRun }) =>
+      safe("argocd_sync_application", async ({ instance, name, revision, prune, dryRun }) =>
         jsonResult(
-          await api(cfg, `/api/v1/applications/${encodeURIComponent(name)}/sync`, {
+          await api(pick(instance), `/api/v1/applications/${encodeURIComponent(name)}/sync`, {
             method: "POST",
             body: { revision, prune: prune ?? false, dryRun: dryRun ?? false },
           }),

@@ -95,7 +95,36 @@ Everything is env-var driven; an integration is enabled **only** when its variab
 | Bitbucket | `BITBUCKET_TOKEN` **or** `BITBUCKET_USERNAME`+`BITBUCKET_APP_PASSWORD` (+ `BITBUCKET_WORKSPACE`) |
 | Playwright | `PLAYWRIGHT_ENABLED=true` (+ `npx playwright install chromium`) |
 
-**Server settings:** `MCP_AUTH_TOKEN` (bearer auth — set it in production), `MCP_ALLOW_WRITES` (default `false`), `MCP_HTTP_PORT` (8080), `MCP_RATE_LIMIT_PER_MINUTE` (300), `MCP_SESSION_IDLE_TIMEOUT_MINUTES` (30), `MCP_MAX_RESULT_CHARS` (50000), `MCP_TRUST_PROXY`, `LOG_LEVEL`.
+**Server settings:** `MCP_AUTH_TOKEN` (bearer auth — set it in production), `MCP_API_KEYS` (scoped keys, see below), `MCP_ALLOW_WRITES` (default `false`), `MCP_WRITE_DRYRUN` (default `false`), `MCP_HTTP_PORT` (8080), `MCP_RATE_LIMIT_PER_MINUTE` (300), `MCP_SESSION_IDLE_TIMEOUT_MINUTES` (30), `MCP_MAX_RESULT_CHARS` (50000), `MCP_TRUST_PROXY`, `LOG_LEVEL`.
+
+## Auth & governance
+
+Three layers let you expose one server to multiple callers with different privileges, keep a tamper-evident record of every call, and rehearse writes safely.
+
+**Scoped API keys** — `MCP_AUTH_TOKEN` remains a single full-access bearer key (unchanged). For finer control, set `MCP_API_KEYS` to a JSON object mapping each token secret to a scope:
+
+```bash
+MCP_API_KEYS='{
+  "tok_ci_readonly":  { "name": "ci",       "tools": ["postgres_query", "prometheus_query"], "allowWrites": false },
+  "tok_oncall_write": { "name": "oncall",                                                     "allowWrites": true }
+}'
+```
+
+- `name` — label used in audit logs (never the secret).
+- `tools` — optional allowlist of tool names this key may call; omit for all tools.
+- `allowWrites` — whether the key may call write/mutating tools (in addition to the server-wide `MCP_ALLOW_WRITES`, which must also be on for write tools to exist).
+
+The presented bearer is matched constant-time against `MCP_AUTH_TOKEN` and every `MCP_API_KEYS` entry; an unknown token is rejected with `401`. A call to a tool outside the key's scope, or a write from a key without `allowWrites`, is rejected and audited as `denied`. When either `MCP_AUTH_TOKEN` or `MCP_API_KEYS` is set the endpoint is authenticated.
+
+**Audit logging** — every tool invocation emits one structured pino log line under the `audit` key: `{ tool, write, key, sessionId, outcome, reason?, durationMs, ts }` where `outcome` is `allowed` / `denied` / `dry-run` / `error`. Records carry no tool arguments and no secrets — only who called what, when, and how it resolved. Ship stdout to your log pipeline to retain the trail.
+
+**Write dry-run** — set `MCP_WRITE_DRYRUN=true` and every write/mutating tool returns a preview object (`{ dryRun: true, tool, note, args }`) describing what *would* happen, without touching any backend. Read tools are unaffected. Use it to rehearse a change set or to run an agent against production with writes armed but disarmed.
+
+Enforcement happens once, centrally, at tool dispatch (`installGovernance` in `src/server.ts` wraps `registerTool`), so it applies uniformly to every current and future integration over both HTTP and stdio.
+
+**Multiple instances of one system.** The HTTP integrations — Grafana, Datadog, Prometheus, ArgoCD, GitLab, GitHub, Bitbucket, Jira — can each target several backends (e.g. prod + non-prod). Declare `<NAME>_INSTANCES=a,b` and give each name its own vars (`GRAFANA_PROD_URL`/`GRAFANA_PROD_TOKEN`, …); every tool then accepts an optional `instance` argument. `<NAME>_PRIMARY` (or the first listed name) is the default when a call omits it. The single-instance vars keep working unchanged and register as the `default` instance. See [.env.example](.env.example) for per-integration examples.
+
+**Outbound egress proxy.** Set `HTTP_PROXY`/`HTTPS_PROXY` (with optional `NO_PROXY`) and the server routes all outbound HTTP/REST calls — Grafana, Datadog, Prometheus, ArgoCD, GitLab, GitHub, Bitbucket, Jira — through the proxy. The proxy URL is never logged. **Not covered:** the database drivers (Postgres/MongoDB/Neo4j/Redis), Elasticsearch, Kubernetes and Playwright use their own transports and bypass this proxy.
 
 ## Tool catalog
 
@@ -103,7 +132,7 @@ Write tools (⚡) are registered **only** when `MCP_ALLOW_WRITES=true`.
 
 | Integration | Tools |
 |---|---|
-| **Meta** | `devops_status` |
+| **Meta** | `devops_status`, `devops_investigate` |
 | **Postgres** | `postgres_list_databases`, `postgres_query` (read-only tx), `postgres_list_tables`, `postgres_describe_table`, ⚡`postgres_execute` — all but `list_databases` take an optional `database` to target any DB on the instance |
 | **MongoDB** | `mongo_list_databases`, `mongo_list_collections`, `mongo_find`, `mongo_aggregate`, `mongo_count`, ⚡`mongo_insert`, ⚡`mongo_update` |
 | **Neo4j** | `neo4j_read_cypher`, `neo4j_schema`, ⚡`neo4j_write_cypher` |
@@ -119,8 +148,48 @@ Write tools (⚡) are registered **only** when `MCP_ALLOW_WRITES=true`.
 | **GitHub** | `github_list_repos`, `github_list_pull_requests`, `github_get_pull_request`, `github_list_workflow_runs`, `github_workflow_run_jobs`, `github_list_issues`, `github_get_issue`, `github_list_commits`, ⚡`github_dispatch_workflow`, ⚡`github_rerun_workflow` |
 | **Bitbucket** | `bitbucket_list_repositories`, `bitbucket_list_pull_requests`, `bitbucket_get_pull_request`, `bitbucket_list_pipelines`, `bitbucket_get_pipeline`, ⚡`bitbucket_trigger_pipeline` |
 | **Browser** | `browser_navigate`, `browser_screenshot`, `browser_extract` |
+| **Federation** | `<name>__<remoteTool>` — every tool of each federated MCP server, namespaced (see below) |
+
+## MCP federation (gateway)
+
+This server can front **other** MCP servers and re-expose their tools through its own
+single `/mcp` endpoint, so one client connection reaches your in-house MCP servers
+alongside the built-in integrations. Each remote tool is registered locally as
+`<name>__<remoteTool>` (e.g. `payments__refund_charge`), preserving its input schema.
+
+Declare the servers with `MCP_FEDERATE`, then a URL (required) and optional bearer
+token per name:
+
+```bash
+MCP_FEDERATE=payments,search
+MCP_FEDERATE_PAYMENTS_URL=https://payments-mcp.internal/mcp
+MCP_FEDERATE_PAYMENTS_TOKEN=…                       # sent as Authorization: Bearer …
+MCP_FEDERATE_SEARCH_URL=https://search-mcp.internal/mcp
+```
+
+Remote servers are contacted over Streamable HTTP the first time a session needs them;
+the connections and tool lists are cached and shared across sessions. A remote that is
+unreachable is logged and skipped — it never blocks startup. `devops_status` lists the
+connected servers as `federation:<name>`.
+
+## Cross-integration investigation
+
+`devops_investigate` is the meta-tool that makes this a gateway rather than 17 separate wrappers. Give it a service name and it correlates signals across **every enabled integration in a single call** — instead of you chaining a dozen tool calls by hand:
+
+- **Kubernetes** — pods matching the service (by name or `app`/`app.kubernetes.io/name` labels), recent warning events involving them, and a tail of the first pod's logs (previous instance if it has restarts)
+- **Prometheus / Datadog** — currently firing alerts (or alerting monitors) that mention the service
+- **ArgoCD** — the matching application's sync status, health, and last operation
+- **GitLab / GitHub** — the most recent pipeline / workflow run for the matching project/repo
+
+```jsonc
+{ "service": "checkout", "namespace": "prod", "sinceMinutes": 30 }
+```
+
+It returns a single structured object — `{ service, gathered: { kubernetes?, alerts?, argocd?, ci? }, errors: [...] }`. It **only surfaces signals for the integrations that are enabled** on this server (the `queried` field lists which were reached), and each source is gathered independently: if one backend errors it is recorded under `errors` rather than failing the whole investigation, so you always get a partial picture. Output is capped by the same truncation limits as every other tool.
 
 ## Example prompts
+
+> "Investigate the `checkout` service — pull together its pods, alerts, ArgoCD sync state and latest CI run."
 
 > "Which ArgoCD apps are out of sync, and what does the resource tree say is unhealthy?"
 
@@ -158,17 +227,38 @@ curl -sS -X POST http://localhost:8080/mcp \
 
 ## Security notes
 
-- **Set `MCP_AUTH_TOKEN`.** Without it the endpoint is open (the server logs a loud warning).
+- **Set `MCP_AUTH_TOKEN` (or `MCP_API_KEYS`).** Without either, the endpoint is open (the server logs a loud warning). See [Auth & governance](#auth--governance) for scoped keys, audit logging, and write dry-run.
 - **Run behind TLS** (ingress/reverse proxy). Set `MCP_TRUST_PROXY=true` behind a load balancer.
 - **Leave `MCP_ALLOW_WRITES=false`** unless you explicitly need mutations; read tools are designed to be safe (read-only transactions, SCAN instead of KEYS, bounded results).
 - **Scope credentials minimally** — e.g. a read-only Postgres role, a Grafana service account with Viewer, a GitLab token with `read_api` when writes are off.
 - The LLM client decides which tools to call; treat this server's credentials as the blast radius.
 
+## Observability
+
+The gateway exposes its own health and telemetry on unauthenticated probe endpoints (like `/healthz`) so Kubernetes and Prometheus can reach them without a bearer token:
+
+- `GET /healthz` — liveness. `{ "status": "ok" }`.
+- `GET /readyz` — readiness. Reports the server version, active session count, whether writes are allowed, and the count **and names** of configured integrations. This is configured state only — it does **not** perform live network pings to backends.
+- `GET /metrics` — Prometheus text exposition (`Content-Type: text/plain; version=0.0.4`). Per-tool call counts, error counts, and a duration histogram (`mcp_tool_duration_seconds`), plus process-wide `mcp_tool_calls_total`, `mcp_tool_errors_total`, and `mcp_uptime_seconds`.
+
+Example scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: ultimate-devops-mcp
+    static_configs:
+      - targets: ["ultimate-devops-mcp:8080"]
+```
+
+**`/metrics` is intentionally unauthenticated** so a scraper needs no credentials. It exposes only aggregate tool-call counters — never integration credentials or tool payloads. Keep it reachable only from your monitoring network (ingress rule / NetworkPolicy); do not expose it to the public internet.
+
 ## Architecture
 
-- `src/index.ts` — Express app, Streamable HTTP session management, auth, rate limit, health, shutdown
-- `src/server.ts` — builds the `McpServer` and registers enabled integrations
+- `src/index.ts` — Express app, Streamable HTTP session management, auth (bearer + scoped keys), rate limit, health, shutdown
+- `src/server.ts` — builds the `McpServer`, registers enabled integrations, and installs the governance guard (scope enforcement, audit, write dry-run)
+- `src/audit.ts` — key-identity types, request-scoped context (AsyncLocalStorage), and the structured audit logger
 - `src/integrations/*.ts` — one file per system; lazy singleton clients shared across sessions
+- `src/federation.ts` — connects to other MCP servers and registers namespaced proxy tools
 - Adding an integration = one new file exporting `register<Name>(server, config)` + a config block. PRs welcome.
 
 ## Roadmap

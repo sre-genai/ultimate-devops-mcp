@@ -1,4 +1,5 @@
 import "dotenv/config";
+import type { KeyIdentity } from "./audit.js";
 
 export interface PostgresConfig {
   connectionString: string;
@@ -18,11 +19,17 @@ export interface Neo4jConfig {
   password: string;
   database?: string;
 }
-export interface ElasticConfig {
+export interface ElasticInstance {
   node: string;
   apiKey?: string;
   username?: string;
   password?: string;
+}
+export interface ElasticConfig {
+  /** Named Elasticsearch instances, keyed by lowercase name. */
+  instances: Record<string, ElasticInstance>;
+  /** Instance used when a tool call omits `instance`. */
+  primary: string;
 }
 export interface KafkaConfig {
   brokers: string[];
@@ -49,31 +56,67 @@ export interface GrafanaConfig {
   /** The instance used when a tool call omits `instance`. */
   primary: string;
 }
-export interface DatadogConfig {
+export interface DatadogInstance {
   site: string;
   apiKey: string;
   appKey: string;
 }
-export interface PrometheusConfig {
+export interface DatadogConfig {
+  /** Named Datadog instances, keyed by lowercase name. */
+  instances: Record<string, DatadogInstance>;
+  /** Instance used when a tool call omits `instance`. */
+  primary: string;
+}
+export interface PrometheusInstance {
   url: string;
   bearerToken?: string;
 }
+export interface PrometheusConfig {
+  /** Named Prometheus instances, keyed by lowercase name. */
+  instances: Record<string, PrometheusInstance>;
+  /** Instance used when a tool call omits `instance`. */
+  primary: string;
+}
+export interface ArgoCDInstance {
+  url: string;
+  token: string;
+}
 export interface ArgoCDConfig {
+  /** Named ArgoCD instances, keyed by lowercase name. */
+  instances: Record<string, ArgoCDInstance>;
+  /** Instance used when a tool call omits `instance`. */
+  primary: string;
+}
+export interface GitlabInstance {
   url: string;
   token: string;
 }
 export interface GitlabConfig {
-  url: string;
+  /** Named GitLab instances, keyed by lowercase name. */
+  instances: Record<string, GitlabInstance>;
+  /** Instance used when a tool call omits `instance`. */
+  primary: string;
+}
+export interface GitHubInstance {
+  baseUrl: string;
   token: string;
 }
 export interface GitHubConfig {
-  baseUrl: string;
-  token: string;
+  /** Named GitHub instances, keyed by lowercase name. */
+  instances: Record<string, GitHubInstance>;
+  /** Instance used when a tool call omits `instance`. */
+  primary: string;
 }
-export interface BitbucketConfig {
+export interface BitbucketInstance {
   baseUrl: string;
   authHeader: string;
   workspace?: string;
+}
+export interface BitbucketConfig {
+  /** Named Bitbucket instances, keyed by lowercase name. */
+  instances: Record<string, BitbucketInstance>;
+  /** Instance used when a tool call omits `instance`. */
+  primary: string;
 }
 
 export interface JiraInstance {
@@ -104,6 +147,44 @@ export interface TemporalConfig {
   serverName?: string;
 }
 
+export interface FederatedServerConfig {
+  /** Lowercase namespace prefix for this server's tools (`<name>__<remoteTool>`). */
+  name: string;
+  /** Remote MCP endpoint (Streamable HTTP), e.g. https://host/mcp. */
+  url: string;
+  /** Optional bearer token sent as `Authorization: Bearer <token>`. */
+  token?: string;
+}
+
+export interface FederationConfig {
+  servers: FederatedServerConfig[];
+}
+
+export interface PagerDutyConfig {
+  baseUrl: string;
+  apiToken: string;
+  /** Required by the REST API on incident create/modify (the "From" header). */
+  fromEmail?: string;
+}
+export interface SentryConfig {
+  baseUrl: string;
+  token: string;
+  org: string;
+}
+export interface JenkinsConfig {
+  baseUrl: string;
+  authHeader: string;
+}
+export interface SlackConfig {
+  botToken: string;
+}
+export interface VaultConfig {
+  addr: string;
+  token: string;
+  /** Default KV v2 mount used when a tool call omits `mount`. */
+  kvMount: string;
+}
+
 export interface Integrations {
   postgres?: PostgresConfig;
   mongo?: MongoConfig;
@@ -122,19 +203,30 @@ export interface Integrations {
   jira?: JiraConfig;
   playwright?: PlaywrightConfig;
   temporal?: TemporalConfig;
+  pagerduty?: PagerDutyConfig;
+  sentry?: SentryConfig;
+  jenkins?: JenkinsConfig;
+  slack?: SlackConfig;
+  vault?: VaultConfig;
 }
 
 export interface AppConfig {
   host: string;
   port: number;
   authToken?: string;
+  /** Scoped API keys: token secret -> {name, tools?, allowWrites}. The bare
+   * MCP_AUTH_TOKEN (authToken) remains a separate full-access key. */
+  apiKeys?: Record<string, KeyIdentity>;
   allowWrites: boolean;
+  /** When true, write/mutating tools return a preview instead of executing. */
+  writeDryRun: boolean;
   logLevel: string;
   rateLimitPerMinute: number;
   sessionIdleTimeoutMs: number;
   maxResultChars: number;
   trustProxy: boolean;
   integrations: Integrations;
+  federation?: FederationConfig;
 }
 
 function env(name: string): string | undefined {
@@ -156,6 +248,56 @@ function envInt(name: string, fallback: number): number {
     throw new Error(`Invalid value for ${name}: "${v}" (expected positive integer)`);
   }
   return n;
+}
+
+/**
+ * Shared parser for the "<PREFIX>_INSTANCES" multi-instance convention used by
+ * the HTTP integrations. Reads a comma-separated PREFIX_INSTANCES list, parses
+ * each named instance's env vars via `parseOne`, and registers a bare
+ * single-instance config (PREFIX_… with no list) as "default" for backward
+ * compatibility. `probe` is the env suffix that signals a listed instance is
+ * present (e.g. "URL", "TOKEN"); a listed name missing it is a config error.
+ * PREFIX_PRIMARY (or the first listed name) chooses the default instance.
+ * (Grafana and Jira keep their own inline copies for their extra auth handling.)
+ */
+function parseInstances<T>(
+  prefix: string,
+  label: string,
+  probe: string | undefined,
+  errors: string[],
+  parseOne: (envPrefix: string, name: string) => T | undefined,
+): { instances: Record<string, T>; primary: string } | undefined {
+  const instances: Record<string, T> = {};
+  const names = (env(`${prefix}_INSTANCES`) ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const name of names) {
+    const key = name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+    if (probe && !env(`${prefix}_${key}_${probe}`)) {
+      errors.push(`${prefix}_INSTANCES lists "${name}" but ${prefix}_${key}_${probe} is missing`);
+      continue;
+    }
+    const inst = parseOne(`${prefix}_${key}_`, `${label} instance "${name}"`);
+    if (inst) instances[name.toLowerCase()] = inst;
+  }
+  // Backward-compatible bare single instance → "default".
+  const bare = parseOne(`${prefix}_`, label);
+  if (bare) instances["default"] = bare;
+  if (Object.keys(instances).length === 0) return undefined;
+
+  const requested = env(`${prefix}_PRIMARY`)?.toLowerCase();
+  if (requested && !instances[requested]) {
+    errors.push(`${prefix}_PRIMARY="${requested}" is not one of the configured ${label} instances`);
+  }
+  const firstListed = names[0]?.toLowerCase();
+  const primary =
+    requested && instances[requested]
+      ? requested
+      : firstListed && instances[firstListed]
+        ? firstListed
+        : Object.keys(instances)[0];
+  return { instances, primary };
 }
 
 /**
@@ -196,16 +338,26 @@ export function loadConfig(): AppConfig {
     }
   }
 
-  // --- Elasticsearch ---
-  const esNode = env("ELASTICSEARCH_NODE");
-  if (esNode) {
-    integrations.elastic = {
-      node: esNode,
-      apiKey: env("ELASTICSEARCH_API_KEY"),
-      username: env("ELASTICSEARCH_USERNAME"),
-      password: env("ELASTICSEARCH_PASSWORD"),
-    };
-  }
+  // --- Elasticsearch (single or multi-instance) ---
+  // Multi: ELASTICSEARCH_INSTANCES=prod,staging with ELASTICSEARCH_PROD_NODE
+  // (+ _API_KEY or _USERNAME/_PASSWORD) per name. Bare ELASTICSEARCH_NODE →
+  // "default".
+  integrations.elastic = parseInstances<ElasticInstance>(
+    "ELASTICSEARCH",
+    "Elasticsearch",
+    "NODE",
+    errors,
+    (p) => {
+      const node = env(`${p}NODE`);
+      if (!node) return undefined;
+      return {
+        node,
+        apiKey: env(`${p}API_KEY`),
+        username: env(`${p}USERNAME`),
+        password: env(`${p}PASSWORD`),
+      };
+    },
+  );
 
   // --- Kafka ---
   const kafkaBrokers = env("KAFKA_BROKERS");
@@ -281,76 +433,102 @@ export function loadConfig(): AppConfig {
     }
   }
 
-  // --- Datadog ---
-  const ddApiKey = env("DATADOG_API_KEY");
-  if (ddApiKey) {
-    const appKey = env("DATADOG_APP_KEY");
-    if (!appKey) {
-      errors.push("DATADOG_API_KEY is set but DATADOG_APP_KEY is missing");
-    } else {
-      integrations.datadog = {
-        site: env("DATADOG_SITE") ?? "datadoghq.com",
-        apiKey: ddApiKey,
-        appKey,
-      };
-    }
-  }
+  // --- Datadog (single or multi-instance) ---
+  // Multi: DATADOG_INSTANCES=prod,staging with DATADOG_PROD_API_KEY /
+  // DATADOG_PROD_APP_KEY (+ optional _SITE) per name. Bare DATADOG_API_KEY +
+  // DATADOG_APP_KEY → "default".
+  integrations.datadog = parseInstances<DatadogInstance>(
+    "DATADOG",
+    "Datadog",
+    "API_KEY",
+    errors,
+    (p) => {
+      const apiKey = env(`${p}API_KEY`);
+      if (!apiKey) return undefined;
+      const appKey = env(`${p}APP_KEY`);
+      if (!appKey) {
+        errors.push(`${p}API_KEY is set but ${p}APP_KEY is missing`);
+        return undefined;
+      }
+      return { site: env(`${p}SITE`) ?? "datadoghq.com", apiKey, appKey };
+    },
+  );
 
-  // --- Prometheus ---
-  const promUrl = env("PROMETHEUS_URL");
-  if (promUrl) {
-    integrations.prometheus = {
-      url: promUrl.replace(/\/+$/, ""),
-      bearerToken: env("PROMETHEUS_BEARER_TOKEN"),
-    };
-  }
+  // --- Prometheus (single or multi-instance) ---
+  // Multi: PROMETHEUS_INSTANCES=prod,staging with PROMETHEUS_PROD_URL (+ optional
+  // _BEARER_TOKEN) per name. Bare PROMETHEUS_URL → "default".
+  integrations.prometheus = parseInstances<PrometheusInstance>(
+    "PROMETHEUS",
+    "Prometheus",
+    "URL",
+    errors,
+    (p) => {
+      const url = env(`${p}URL`);
+      if (!url) return undefined;
+      return { url: url.replace(/\/+$/, ""), bearerToken: env(`${p}BEARER_TOKEN`) };
+    },
+  );
 
-  // --- ArgoCD ---
-  const argocdUrl = env("ARGOCD_URL");
-  if (argocdUrl) {
-    const token = env("ARGOCD_TOKEN");
+  // --- ArgoCD (single or multi-instance) ---
+  // Multi: ARGOCD_INSTANCES=prod,staging with ARGOCD_PROD_URL / ARGOCD_PROD_TOKEN
+  // per name. Bare ARGOCD_URL + ARGOCD_TOKEN → "default".
+  integrations.argocd = parseInstances<ArgoCDInstance>("ARGOCD", "ArgoCD", "URL", errors, (p) => {
+    const url = env(`${p}URL`);
+    if (!url) return undefined;
+    const token = env(`${p}TOKEN`);
     if (!token) {
-      errors.push("ARGOCD_URL is set but ARGOCD_TOKEN is missing");
-    } else {
-      integrations.argocd = { url: argocdUrl.replace(/\/+$/, ""), token };
+      errors.push(`${p}URL is set but ${p}TOKEN is missing`);
+      return undefined;
     }
-  }
+    return { url: url.replace(/\/+$/, ""), token };
+  });
 
-  // --- GitLab ---
-  const gitlabToken = env("GITLAB_TOKEN");
-  if (gitlabToken) {
-    integrations.gitlab = {
-      url: (env("GITLAB_URL") ?? "https://gitlab.com").replace(/\/+$/, ""),
-      token: gitlabToken,
-    };
-  }
+  // --- GitLab (single or multi-instance) ---
+  // Multi: GITLAB_INSTANCES=prod,onprem with GITLAB_PROD_TOKEN (+ optional _URL)
+  // per name. Bare GITLAB_TOKEN → "default".
+  integrations.gitlab = parseInstances<GitlabInstance>("GITLAB", "GitLab", "TOKEN", errors, (p) => {
+    const token = env(`${p}TOKEN`);
+    if (!token) return undefined;
+    return { url: (env(`${p}URL`) ?? "https://gitlab.com").replace(/\/+$/, ""), token };
+  });
 
-  // --- GitHub (github.com or GHE; GITHUB_API_URL like https://ghe.co/api/v3) ---
-  const githubToken = env("GITHUB_TOKEN");
-  if (githubToken) {
-    integrations.github = {
-      baseUrl: (env("GITHUB_API_URL") ?? "https://api.github.com").replace(/\/+$/, ""),
-      token: githubToken,
-    };
-  }
+  // --- GitHub (github.com or GHE; single or multi-instance) ---
+  // Multi: GITHUB_INSTANCES=cloud,ghe with GITHUB_CLOUD_TOKEN (+ optional
+  // _API_URL like https://ghe.co/api/v3) per name. Bare GITHUB_TOKEN → "default".
+  integrations.github = parseInstances<GitHubInstance>("GITHUB", "GitHub", "TOKEN", errors, (p) => {
+    const token = env(`${p}TOKEN`);
+    if (!token) return undefined;
+    return { baseUrl: (env(`${p}API_URL`) ?? "https://api.github.com").replace(/\/+$/, ""), token };
+  });
 
   // --- Bitbucket (Cloud API 2.0: access token, or username + app password) ---
-  const bbToken = env("BITBUCKET_TOKEN");
-  const bbUser = env("BITBUCKET_USERNAME");
-  const bbPass = env("BITBUCKET_APP_PASSWORD");
-  if (bbToken || (bbUser && bbPass)) {
-    integrations.bitbucket = {
-      baseUrl: (env("BITBUCKET_API_URL") ?? "https://api.bitbucket.org/2.0").replace(/\/+$/, ""),
-      authHeader: bbToken
-        ? `Bearer ${bbToken}`
-        : `Basic ${Buffer.from(`${bbUser}:${bbPass}`).toString("base64")}`,
-      workspace: env("BITBUCKET_WORKSPACE"),
-    };
-  } else if (bbUser || bbPass) {
-    errors.push(
-      "Bitbucket needs BITBUCKET_TOKEN, or BOTH BITBUCKET_USERNAME and BITBUCKET_APP_PASSWORD",
-    );
-  }
+  // Multi: BITBUCKET_INSTANCES=prod,sandbox with BITBUCKET_PROD_TOKEN (or
+  // _USERNAME + _APP_PASSWORD, + optional _WORKSPACE / _API_URL) per name. Bare
+  // BITBUCKET_TOKEN (or USERNAME+APP_PASSWORD) → "default".
+  integrations.bitbucket = parseInstances<BitbucketInstance>(
+    "BITBUCKET",
+    "Bitbucket",
+    undefined,
+    errors,
+    (p, name) => {
+      const token = env(`${p}TOKEN`);
+      const user = env(`${p}USERNAME`);
+      const pass = env(`${p}APP_PASSWORD`);
+      if (!token && !(user && pass)) {
+        if (user || pass) {
+          errors.push(`${name} needs ${p}TOKEN, or BOTH ${p}USERNAME and ${p}APP_PASSWORD`);
+        }
+        return undefined;
+      }
+      return {
+        baseUrl: (env(`${p}API_URL`) ?? "https://api.bitbucket.org/2.0").replace(/\/+$/, ""),
+        authHeader: token
+          ? `Bearer ${token}`
+          : `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`,
+        workspace: env(`${p}WORKSPACE`),
+      };
+    },
+  );
 
   // --- Jira (single or multi-instance; Cloud basic-auth or Server/DC bearer) ---
   // Cloud:  JIRA_URL + JIRA_EMAIL + JIRA_API_TOKEN  (REST v3)
@@ -437,6 +615,123 @@ export function loadConfig(): AppConfig {
     }
   }
 
+  // --- MCP federation (front other MCP servers, re-expose their tools namespaced) ---
+  // MCP_FEDERATE=name1,name2 with MCP_FEDERATE_<NAME>_URL (required) and
+  // MCP_FEDERATE_<NAME>_TOKEN (optional bearer) per entry.
+  let federation: FederationConfig | undefined;
+  {
+    const names = (env("MCP_FEDERATE") ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const servers: FederatedServerConfig[] = [];
+    for (const name of names) {
+      const key = name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+      const url = env(`MCP_FEDERATE_${key}_URL`);
+      if (!url) {
+        errors.push(`MCP_FEDERATE lists "${name}" but MCP_FEDERATE_${key}_URL is missing`);
+        continue;
+      }
+      servers.push({
+        name: name.toLowerCase(),
+        url: url.replace(/\/+$/, ""),
+        token: env(`MCP_FEDERATE_${key}_TOKEN`),
+      });
+    }
+    if (servers.length > 0) federation = { servers };
+  }
+
+  // --- Scoped API keys (optional; MCP_AUTH_TOKEN stays a full-access key) ---
+  // MCP_API_KEYS is a JSON object mapping each token secret to a scope:
+  //   {"tok_ci":{"name":"ci","tools":["postgres_query"],"allowWrites":false}}
+  let apiKeys: Record<string, KeyIdentity> | undefined;
+  const rawKeys = env("MCP_API_KEYS");
+  if (rawKeys) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawKeys);
+    } catch {
+      errors.push("MCP_API_KEYS is not valid JSON (expected an object mapping token -> scope)");
+    }
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const map: Record<string, KeyIdentity> = {};
+      for (const [secret, spec] of Object.entries(parsed as Record<string, unknown>)) {
+        if (!secret || typeof spec !== "object" || spec === null || Array.isArray(spec)) {
+          errors.push(`MCP_API_KEYS["${secret}"] must be an object { name, tools?, allowWrites? }`);
+          continue;
+        }
+        const s = spec as { name?: unknown; tools?: unknown; allowWrites?: unknown };
+        map[secret] = {
+          name: typeof s.name === "string" && s.name.trim() ? s.name.trim() : "unnamed",
+          tools: Array.isArray(s.tools) ? s.tools.filter((t): t is string => typeof t === "string") : undefined,
+          allowWrites: s.allowWrites === true,
+        };
+      }
+      if (Object.keys(map).length > 0) apiKeys = map;
+    } else if (parsed !== undefined) {
+      errors.push("MCP_API_KEYS must be a JSON object mapping token -> scope");
+    }
+  }
+
+  // --- PagerDuty (REST API v2: token auth) ---
+  const pdToken = env("PAGERDUTY_API_TOKEN");
+  if (pdToken) {
+    integrations.pagerduty = {
+      baseUrl: (env("PAGERDUTY_API_URL") ?? "https://api.pagerduty.com").replace(/\/+$/, ""),
+      apiToken: pdToken,
+      fromEmail: env("PAGERDUTY_FROM_EMAIL"),
+    };
+  }
+
+  // --- Sentry (self-hosted or SaaS; org required) ---
+  const sentryToken = env("SENTRY_TOKEN");
+  if (sentryToken) {
+    const org = env("SENTRY_ORG");
+    if (!org) {
+      errors.push("SENTRY_TOKEN is set but SENTRY_ORG is missing");
+    } else {
+      integrations.sentry = {
+        baseUrl: (env("SENTRY_URL") ?? "https://sentry.io").replace(/\/+$/, ""),
+        token: sentryToken,
+        org,
+      };
+    }
+  }
+
+  // --- Jenkins (basic auth: user + API token) ---
+  const jenkinsUrl = env("JENKINS_URL");
+  if (jenkinsUrl) {
+    const user = env("JENKINS_USER");
+    const token = env("JENKINS_TOKEN");
+    if (!user || !token) {
+      errors.push("JENKINS_URL is set but JENKINS_USER/JENKINS_TOKEN are missing");
+    } else {
+      integrations.jenkins = {
+        baseUrl: jenkinsUrl.replace(/\/+$/, ""),
+        authHeader: `Basic ${Buffer.from(`${user}:${token}`).toString("base64")}`,
+      };
+    }
+  }
+
+  // --- Slack (bot token) ---
+  const slackToken = env("SLACK_BOT_TOKEN");
+  if (slackToken) integrations.slack = { botToken: slackToken };
+
+  // --- Vault (token auth; read-mostly KV v2) ---
+  const vaultAddr = env("VAULT_ADDR");
+  if (vaultAddr) {
+    const token = env("VAULT_TOKEN");
+    if (!token) {
+      errors.push("VAULT_ADDR is set but VAULT_TOKEN is missing");
+    } else {
+      integrations.vault = {
+        addr: vaultAddr.replace(/\/+$/, ""),
+        token,
+        kvMount: env("VAULT_KV_MOUNT") ?? "secret",
+      };
+    }
+  }
+
   if (errors.length > 0) {
     throw new Error(`Configuration errors:\n  - ${errors.join("\n  - ")}`);
   }
@@ -449,13 +744,16 @@ export function loadConfig(): AppConfig {
     host: env("MCP_HTTP_HOST") ?? "127.0.0.1",
     port: envInt("MCP_HTTP_PORT", 8080),
     authToken: env("MCP_AUTH_TOKEN"),
+    apiKeys,
     allowWrites: envBool("MCP_ALLOW_WRITES"),
+    writeDryRun: envBool("MCP_WRITE_DRYRUN"),
     logLevel: env("LOG_LEVEL") ?? "info",
     rateLimitPerMinute: envInt("MCP_RATE_LIMIT_PER_MINUTE", 300),
     sessionIdleTimeoutMs: envInt("MCP_SESSION_IDLE_TIMEOUT_MINUTES", 30) * 60_000,
     maxResultChars: envInt("MCP_MAX_RESULT_CHARS", 50_000),
     trustProxy: envBool("MCP_TRUST_PROXY"),
     integrations,
+    federation,
   };
 }
 

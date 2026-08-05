@@ -1,17 +1,32 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import express, { type NextFunction, type Request, type Response } from "express";
 import rateLimit from "express-rate-limit";
+import { setGlobalDispatcher, EnvHttpProxyAgent } from "undici";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, enabledIntegrationNames } from "./config.js";
 import { logger } from "./logger.js";
 import { closeAll, setMaxResultChars } from "./util.js";
+import { renderPrometheus } from "./metrics.js";
 import { createMcpServer, SERVER_NAME, SERVER_VERSION } from "./server.js";
+import { type KeyIdentity, LOCAL_IDENTITY, withRequestContext } from "./audit.js";
+
+// Outbound egress proxy: when HTTP_PROXY/HTTPS_PROXY is set (any case), route all
+// fetch()/undici traffic through it. Done at boot, before any integration makes a
+// request. EnvHttpProxyAgent reads the proxy URLs and NO_PROXY from the
+// environment itself. This covers the HTTP/REST integrations (Grafana, Datadog,
+// Prometheus, ArgoCD, GitLab, GitHub, Bitbucket, Jira) only — the DB drivers,
+// Elasticsearch, Kubernetes and Playwright use their own transports and are NOT
+// proxied here. The proxy URL is never logged (it can contain credentials).
+if (["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"].some((k) => process.env[k])) {
+  setGlobalDispatcher(new EnvHttpProxyAgent());
+  logger.info("outbound HTTP proxy enabled (HTTP_PROXY/HTTPS_PROXY)");
+}
 
 const config = loadConfig();
 setMaxResultChars(config.maxResultChars);
 
-if (!config.authToken) {
+if (!config.authToken && !config.apiKeys) {
   const loopback = ["127.0.0.1", "::1", "localhost"].includes(config.host);
   if (!loopback && process.env.MCP_INSECURE !== "1") {
     logger.fatal(
@@ -22,8 +37,8 @@ if (!config.authToken) {
     process.exit(1);
   }
   logger.warn(
-    "MCP_AUTH_TOKEN is not set — the /mcp endpoint is UNAUTHENTICATED (bound to a local interface). " +
-      "Set MCP_AUTH_TOKEN before exposing it.",
+    "Neither MCP_AUTH_TOKEN nor MCP_API_KEYS is set — the /mcp endpoint is UNAUTHENTICATED " +
+      "(bound to a local interface). Set one before exposing it.",
   );
 }
 
@@ -70,25 +85,54 @@ app.get("/healthz", (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
 app.get("/readyz", (_req, res) => {
+  // Configured state only — no live network pings to backends. Report a COUNT,
+  // not names: don't enumerate the attack surface to unauthenticated callers.
+  // The authenticated devops_status tool exposes the integration names.
   res.status(200).json({
     status: "ok",
     server: SERVER_NAME,
     version: SERVER_VERSION,
     sessions: sessions.size,
-    // Count only — don't enumerate which backends are wired to unauth callers.
     integrations: enabledIntegrationNames(config).length,
   });
 });
 
-// Bearer-token auth (constant-time compare)
+// Prometheus scrape target. Deliberately unauthenticated (like /healthz) so a
+// scraper needs no bearer token; it exposes only aggregate tool-call counters,
+// never credentials or payloads. Keep it behind your network policy / ingress.
+app.get("/metrics", (_req, res) => {
+  res.status(200).type("text/plain; version=0.0.4").send(renderPrometheus());
+});
+
+// Resolve a presented bearer to a key identity (constant-time compare). The bare
+// MCP_AUTH_TOKEN is a full-access key; MCP_API_KEYS entries carry their own scope.
+// Every candidate is compared so a match doesn't short-circuit before the others.
+function resolveKey(token: string): KeyIdentity | undefined {
+  let match: KeyIdentity | undefined;
+  if (config.authToken && safeEqual(token, config.authToken)) {
+    match = { name: "root", allowWrites: config.allowWrites };
+  }
+  if (config.apiKeys) {
+    for (const [secret, scope] of Object.entries(config.apiKeys)) {
+      if (safeEqual(token, secret)) match = scope;
+    }
+  }
+  return match;
+}
+
+// Bearer-token auth (constant-time compare). Resolves the token to a key
+// identity and stashes it on res.locals for the dispatch layer (see the POST
+// handler, which carries it into request-scoped context for governance/audit).
 function authenticate(req: Request, res: Response, next: NextFunction): void {
-  if (!config.authToken) {
+  if (!config.authToken && !config.apiKeys) {
     next();
     return;
   }
   const header = req.headers.authorization;
   const token = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
-  if (token && safeEqual(token, config.authToken)) {
+  const identity = token ? resolveKey(token) : undefined;
+  if (identity) {
+    res.locals.identity = identity;
     next();
     return;
   }
@@ -153,7 +197,11 @@ app.use("/mcp", checkOrigin, limiter, authenticate);
 
 app.post("/mcp", async (req: Request, res: Response) => {
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  const identity = (res.locals.identity as KeyIdentity | undefined) ?? LOCAL_IDENTITY;
 
+  // Carry the resolved key + session into request-scoped context so the tool
+  // dispatch governance guard (server.ts) can enforce scope and emit audit logs.
+  await withRequestContext({ key: identity, sessionId }, async () => {
   try {
     if (sessionId && sessions.has(sessionId)) {
       touch(sessionId);
@@ -175,7 +223,7 @@ app.post("/mcp", async (req: Request, res: Response) => {
           logger.info({ sessionId: sid, activeSessions: sessions.size }, "session closed");
         }
       };
-      const { server } = createMcpServer(config);
+      const { server } = await createMcpServer(config);
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
       return;
@@ -201,6 +249,7 @@ app.post("/mcp", async (req: Request, res: Response) => {
       });
     }
   }
+  });
 });
 
 async function handleSessionRequest(req: Request, res: Response): Promise<void> {
@@ -236,8 +285,10 @@ const httpServer = app.listen(config.port, config.host, () => {
     {
       host: config.host,
       port: config.port,
-      auth: config.authToken ? "bearer" : "DISABLED",
+      auth: config.authToken || config.apiKeys ? "bearer" : "DISABLED",
+      scopedKeys: config.apiKeys ? Object.keys(config.apiKeys).length : 0,
       writesAllowed: config.allowWrites,
+      writeDryRun: config.writeDryRun,
       integrations: enabledIntegrationNames(config),
     },
     `${SERVER_NAME} v${SERVER_VERSION} listening — MCP endpoint at http://${config.host}:${config.port}/mcp`,

@@ -1,17 +1,37 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { AppConfig, PrometheusConfig } from "../config.js";
+import type { AppConfig, PrometheusInstance } from "../config.js";
 import { httpRequest, jsonResult, qs, safe } from "../util.js";
 
-function api(cfg: PrometheusConfig, path: string) {
-  return httpRequest(`${cfg.url}${path}`, {
-    headers: cfg.bearerToken ? { authorization: `Bearer ${cfg.bearerToken}` } : {},
+function api(inst: PrometheusInstance, path: string) {
+  return httpRequest(`${inst.url}${path}`, {
+    headers: inst.bearerToken ? { authorization: `Bearer ${inst.bearerToken}` } : {},
   });
 }
 
 export function registerPrometheus(server: McpServer, config: AppConfig): boolean {
   const cfg = config.integrations.prometheus;
   if (!cfg) return false;
+  const { instances, primary } = cfg;
+
+  const names = Object.keys(instances);
+  const multi = names.length > 1;
+  const instanceArg = z
+    .enum(names as [string, ...string[]])
+    .optional()
+    .describe(
+      multi
+        ? `Which Prometheus to target: ${names.join(", ")} (default: ${primary}).`
+        : `Prometheus instance (only "${primary}" configured; optional).`,
+    );
+
+  function pick(instance?: string): PrometheusInstance {
+    const inst = instances[instance ?? primary];
+    if (!inst) {
+      throw new Error(`Unknown Prometheus instance "${instance}". Configured: ${names.join(", ")}.`);
+    }
+    return inst;
+  }
 
   server.registerTool(
     "prom_query",
@@ -19,12 +39,13 @@ export function registerPrometheus(server: McpServer, config: AppConfig): boolea
       title: "Prometheus instant query",
       description: 'Evaluates a PromQL expression at a single point in time, e.g. up{job="api"} or rate(http_requests_total[5m]).',
       inputSchema: {
+        instance: instanceArg,
         query: z.string().describe("PromQL expression"),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("prom_query", async ({ query }) => {
-      const res = (await api(cfg, `/api/v1/query${qs({ query })}`)) as {
+    safe("prom_query", async ({ instance, query }) => {
+      const res = (await api(pick(instance), `/api/v1/query${qs({ query })}`)) as {
         data?: { resultType?: string; result?: unknown[] };
       };
       return jsonResult({
@@ -40,17 +61,18 @@ export function registerPrometheus(server: McpServer, config: AppConfig): boolea
       title: "Prometheus range query",
       description: "Evaluates a PromQL expression over a time range (timeseries).",
       inputSchema: {
+        instance: instanceArg,
         query: z.string().describe("PromQL expression"),
         startMinutesAgo: z.number().int().min(1).max(10080).optional().describe("Range start (default 60)"),
         stepSeconds: z.number().int().min(5).max(3600).optional().describe("Resolution step (default 60)"),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("prom_query_range", async ({ query, startMinutesAgo, stepSeconds }) => {
+    safe("prom_query_range", async ({ instance, query, startMinutesAgo, stepSeconds }) => {
       const end = Math.floor(Date.now() / 1000);
       const start = end - (startMinutesAgo ?? 60) * 60;
       const res = (await api(
-        cfg,
+        pick(instance),
         `/api/v1/query_range${qs({ query, start, end, step: stepSeconds ?? 60 })}`,
       )) as { data?: { resultType?: string; result?: Array<{ metric?: unknown; values?: unknown[] }> } };
       return jsonResult({
@@ -68,11 +90,13 @@ export function registerPrometheus(server: McpServer, config: AppConfig): boolea
     {
       title: "Prometheus active alerts",
       description: "Lists currently firing/pending alerts from Prometheus.",
-      inputSchema: {},
+      inputSchema: {
+        instance: instanceArg,
+      },
       annotations: { readOnlyHint: true },
     },
-    safe("prom_alerts", async () => {
-      const res = (await api(cfg, "/api/v1/alerts")) as { data?: { alerts?: unknown[] } };
+    safe("prom_alerts", async ({ instance }) => {
+      const res = (await api(pick(instance), "/api/v1/alerts")) as { data?: { alerts?: unknown[] } };
       return jsonResult(res.data?.alerts ?? []);
     }),
   );
@@ -83,12 +107,13 @@ export function registerPrometheus(server: McpServer, config: AppConfig): boolea
       title: "Prometheus scrape targets",
       description: "Lists scrape targets with health and last error — useful for finding down exporters.",
       inputSchema: {
+        instance: instanceArg,
         state: z.enum(["active", "dropped", "any"]).optional(),
       },
       annotations: { readOnlyHint: true },
     },
-    safe("prom_targets", async ({ state }) => {
-      const res = (await api(cfg, `/api/v1/targets${qs({ state: state === "any" ? undefined : (state ?? "active") })}`)) as {
+    safe("prom_targets", async ({ instance, state }) => {
+      const res = (await api(pick(instance), `/api/v1/targets${qs({ state: state === "any" ? undefined : (state ?? "active") })}`)) as {
         data?: { activeTargets?: Array<Record<string, unknown>>; droppedTargets?: unknown[] };
       };
       return jsonResult({
