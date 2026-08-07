@@ -19,7 +19,7 @@ function getCore(cfg: HelmConfig): k8s.CoreV1Api {
 // Helm 3 stores each release revision as a Secret (type helm.sh/release.v1) whose
 // `release` field is base64(gzip(JSON)); the k8s API base64-encodes it once more.
 // Decode both layers, then gunzip. Falls back gracefully if only single-encoded.
-function decodeRelease(raw: string): Record<string, unknown> {
+export function decodeRelease(raw: string): Record<string, unknown> {
   let buf = Buffer.from(raw, "base64");
   if (!(buf[0] === 0x1f && buf[1] === 0x8b)) {
     buf = Buffer.from(buf.toString("utf8"), "base64");

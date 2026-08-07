@@ -36,7 +36,7 @@ async function json(cfg: DockerConfig, path: string, method = "GET"): Promise<un
 
 // Non-TTY container logs are a multiplexed stream: 8-byte frame header
 // [stream, 0,0,0, size(4 BE)] + payload. TTY containers stream raw. Demux both.
-function demuxLogs(buf: Buffer): string {
+export function demuxLogs(buf: Buffer): string {
   const out: string[] = [];
   let i = 0;
   while (i + 8 <= buf.length) {
