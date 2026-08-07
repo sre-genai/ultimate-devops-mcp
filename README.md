@@ -3,7 +3,7 @@
 **One MCP server for your entire DevOps stack.** Give Claude, Cursor, or any MCP client operational access to Postgres, MongoDB, Neo4j, Elasticsearch, Kafka, Redis, Kubernetes, Grafana, Datadog, Prometheus, ArgoCD, GitLab, GitHub, Bitbucket and a headless browser — through a single production-ready endpoint.
 
 - **Latest MCP transport** — Streamable HTTP (spec `2025-03-26`+), stateful sessions, SSE streaming
-- **13 integrations, ~60 tools** — each activates automatically when its env vars are set
+- **28 integrations, 150+ tools** — each activates automatically when its env vars are set
 - **Safe by default** — read-only unless `MCP_ALLOW_WRITES=true`; SQL/Cypher run in read-only transactions
 - **Production hardening** — bearer-token auth, rate limiting, output truncation, idle-session reaping, graceful shutdown, health probes, structured JSON logs
 - **MIT licensed**
@@ -94,6 +94,12 @@ Everything is env-var driven; an integration is enabled **only** when its variab
 | GitHub | `GITHUB_TOKEN` (+ `GITHUB_API_URL` for GitHub Enterprise) |
 | Bitbucket | `BITBUCKET_TOKEN` **or** `BITBUCKET_USERNAME`+`BITBUCKET_APP_PASSWORD` (+ `BITBUCKET_WORKSPACE`) |
 | Playwright | `PLAYWRIGHT_ENABLED=true` (+ `npx playwright install chromium`) |
+| Pinecone | `PINECONE_API_KEY` (+ optional `PINECONE_API_VERSION`) |
+| Kubecost | `KUBECOST_URL` (+ optional `KUBECOST_TOKEN`) |
+| Docker | `DOCKER_ENABLED=true` (unix socket) or `DOCKER_HOST=tcp://…` |
+| Helm | `HELM_ENABLED=true` (reads release Secrets via the k8s API; honors `KUBECONFIG`) |
+| Trivy | `TRIVY_ENABLED=true` (+ optional `TRIVY_BIN`) — requires the `trivy` binary on PATH |
+| SonarQube | `SONARQUBE_URL`, `SONARQUBE_TOKEN` |
 
 **Server settings:** `MCP_AUTH_TOKEN` (bearer auth — set it in production), `MCP_API_KEYS` (scoped keys, see below), `MCP_ALLOW_WRITES` (default `false`), `MCP_WRITE_DRYRUN` (default `false`), `MCP_HTTP_PORT` (8080), `MCP_RATE_LIMIT_PER_MINUTE` (300), `MCP_SESSION_IDLE_TIMEOUT_MINUTES` (30), `MCP_MAX_RESULT_CHARS` (50000), `MCP_TRUST_PROXY`, `LOG_LEVEL`.
 
@@ -148,6 +154,12 @@ Write tools (⚡) are registered **only** when `MCP_ALLOW_WRITES=true`.
 | **GitHub** | `github_list_repos`, `github_list_pull_requests`, `github_get_pull_request`, `github_list_workflow_runs`, `github_workflow_run_jobs`, `github_list_issues`, `github_get_issue`, `github_list_commits`, ⚡`github_dispatch_workflow`, ⚡`github_rerun_workflow` |
 | **Bitbucket** | `bitbucket_list_repositories`, `bitbucket_list_pull_requests`, `bitbucket_get_pull_request`, `bitbucket_list_pipelines`, `bitbucket_get_pipeline`, ⚡`bitbucket_trigger_pipeline` |
 | **Browser** | `browser_navigate`, `browser_screenshot`, `browser_extract` |
+| **Pinecone** | `pinecone_list_indexes`, `pinecone_describe_index`, `pinecone_index_stats`, `pinecone_query`, ⚡`pinecone_upsert`, ⚡`pinecone_delete` |
+| **Kubecost** | `kubecost_allocation`, `kubecost_assets` |
+| **Docker** | `docker_list_containers`, `docker_inspect_container`, `docker_container_logs`, `docker_list_images`, `docker_info`, ⚡`docker_restart_container`, ⚡`docker_stop_container` |
+| **Helm** | `helm_list_releases`, `helm_get_release`, `helm_history` |
+| **Trivy** | `trivy_scan_image`, `trivy_scan_filesystem`, `trivy_version` |
+| **SonarQube** | `sonarqube_list_projects`, `sonarqube_project_measures`, `sonarqube_quality_gate`, `sonarqube_issues` |
 | **Federation** | `<name>__<remoteTool>` — every tool of each federated MCP server, namespaced (see below) |
 
 ## MCP federation (gateway)

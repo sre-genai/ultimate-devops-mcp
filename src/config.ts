@@ -184,6 +184,35 @@ export interface VaultConfig {
   /** Default KV v2 mount used when a tool call omits `mount`. */
   kvMount: string;
 }
+export interface PineconeConfig {
+  apiKey: string;
+  /** Pinecone REST API version header (X-Pinecone-API-Version). */
+  apiVersion: string;
+}
+export interface KubecostConfig {
+  url: string;
+  token?: string;
+}
+export interface DockerConfig {
+  /** Unix socket path (default transport), e.g. /var/run/docker.sock. */
+  socketPath?: string;
+  /** TCP host/port when DOCKER_HOST is a tcp:// URL (plain HTTP only). */
+  host?: string;
+  port?: number;
+}
+export interface HelmConfig {
+  /** Kubeconfig path; falls back to the default resolution when unset. */
+  kubeconfigPath?: string;
+}
+export interface TrivyConfig {
+  /** Path to the trivy binary (default "trivy"). */
+  bin: string;
+  timeoutMs: number;
+}
+export interface SonarQubeConfig {
+  baseUrl: string;
+  authHeader: string;
+}
 
 export interface Integrations {
   postgres?: PostgresConfig;
@@ -208,6 +237,12 @@ export interface Integrations {
   jenkins?: JenkinsConfig;
   slack?: SlackConfig;
   vault?: VaultConfig;
+  pinecone?: PineconeConfig;
+  kubecost?: KubecostConfig;
+  docker?: DockerConfig;
+  helm?: HelmConfig;
+  trivy?: TrivyConfig;
+  sonarqube?: SonarQubeConfig;
 }
 
 export interface AppConfig {
@@ -728,6 +763,64 @@ export function loadConfig(): AppConfig {
         addr: vaultAddr.replace(/\/+$/, ""),
         token,
         kvMount: env("VAULT_KV_MOUNT") ?? "secret",
+      };
+    }
+  }
+
+  // --- Pinecone (vector DB; API key) ---
+  const pineconeKey = env("PINECONE_API_KEY");
+  if (pineconeKey) {
+    integrations.pinecone = { apiKey: pineconeKey, apiVersion: env("PINECONE_API_VERSION") ?? "2024-07" };
+  }
+
+  // --- Kubecost (Kubernetes cost; read-only REST) ---
+  const kubecostUrl = env("KUBECOST_URL");
+  if (kubecostUrl) {
+    integrations.kubecost = { url: kubecostUrl.replace(/\/+$/, ""), token: env("KUBECOST_TOKEN") };
+  }
+
+  // --- Docker engine (unix socket by default, or a plain-HTTP tcp:// DOCKER_HOST) ---
+  if (envBool("DOCKER_ENABLED") || env("DOCKER_HOST")) {
+    const dockerHost = env("DOCKER_HOST");
+    if (dockerHost?.startsWith("tcp://")) {
+      try {
+        const u = new URL(dockerHost);
+        integrations.docker = { host: u.hostname, port: Number(u.port || 2375) };
+      } catch {
+        errors.push(`DOCKER_HOST is not a valid URL: "${dockerHost}"`);
+      }
+    } else if (dockerHost?.startsWith("unix://")) {
+      integrations.docker = { socketPath: dockerHost.slice("unix://".length) };
+    } else if (dockerHost && !dockerHost.startsWith("http")) {
+      integrations.docker = { socketPath: dockerHost };
+    } else {
+      integrations.docker = { socketPath: env("DOCKER_SOCKET") ?? "/var/run/docker.sock" };
+    }
+  }
+
+  // --- Helm releases (read from Helm 3 release Secrets via the k8s API) ---
+  if (envBool("HELM_ENABLED")) {
+    integrations.helm = { kubeconfigPath: env("KUBECONFIG") };
+  }
+
+  // --- Trivy (vulnerability scanner; runs the local trivy binary) ---
+  if (envBool("TRIVY_ENABLED")) {
+    integrations.trivy = {
+      bin: env("TRIVY_BIN") ?? "trivy",
+      timeoutMs: envInt("TRIVY_TIMEOUT_SECONDS", 120) * 1000,
+    };
+  }
+
+  // --- SonarQube (code quality/security; token as basic-auth username) ---
+  const sonarUrl = env("SONARQUBE_URL");
+  if (sonarUrl) {
+    const token = env("SONARQUBE_TOKEN");
+    if (!token) {
+      errors.push("SONARQUBE_URL is set but SONARQUBE_TOKEN is missing");
+    } else {
+      integrations.sonarqube = {
+        baseUrl: sonarUrl.replace(/\/+$/, ""),
+        authHeader: `Basic ${Buffer.from(`${token}:`).toString("base64")}`,
       };
     }
   }

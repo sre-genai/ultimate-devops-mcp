@@ -26,10 +26,16 @@ import { registerSentry } from "./integrations/sentry.js";
 import { registerJenkins } from "./integrations/jenkins.js";
 import { registerSlack } from "./integrations/slack.js";
 import { registerVault } from "./integrations/vault.js";
+import { registerPinecone } from "./integrations/pinecone.js";
+import { registerKubecost } from "./integrations/kubecost.js";
+import { registerDocker } from "./integrations/docker.js";
+import { registerHelm } from "./integrations/helm.js";
+import { registerTrivy } from "./integrations/trivy.js";
+import { registerSonarQube } from "./integrations/sonarqube.js";
 import { registerInvestigate } from "./tools/investigate.js";
 
 export const SERVER_NAME = "ultimate-devops-mcp";
-export const SERVER_VERSION = "1.0.0";
+export const SERVER_VERSION = "1.2.0";
 
 type Registrar = (server: McpServer, config: AppConfig) => boolean;
 
@@ -56,6 +62,12 @@ const REGISTRARS: Record<string, Registrar> = {
   jenkins: registerJenkins,
   slack: registerSlack,
   vault: registerVault,
+  pinecone: registerPinecone,
+  kubecost: registerKubecost,
+  docker: registerDocker,
+  helm: registerHelm,
+  trivy: registerTrivy,
+  sonarqube: registerSonarQube,
 };
 
 /**

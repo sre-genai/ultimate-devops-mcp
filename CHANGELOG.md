@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.2.0 — Six new integrations
+
+Adds six integrations (22 → 28), extending coverage into vector databases,
+Kubernetes cost, the local Docker daemon, Helm release state, and security
+scanning. All are read-only by default; write tools appear only when
+`MCP_ALLOW_WRITES=true`, and each enables automatically when its env vars are set.
+
+### Added
+- **Pinecone** — vector database. `pinecone_list_indexes`, `pinecone_describe_index`,
+  `pinecone_index_stats`, `pinecone_query`, plus `pinecone_upsert` / `pinecone_delete`
+  (writes). Config: `PINECONE_API_KEY`.
+- **Kubecost** — Kubernetes cost, read-only. `kubecost_allocation` (workload cost by
+  namespace/controller/label) and `kubecost_assets` (cloud infra cost). Config: `KUBECOST_URL`.
+- **Docker engine** — talks to the local daemon over its unix socket (or a plain-HTTP
+  `tcp://` `DOCKER_HOST`). `docker_list_containers`, `docker_inspect_container`,
+  `docker_container_logs` (stream demuxed), `docker_list_images`, `docker_info`, plus
+  `docker_restart_container` / `docker_stop_container` (writes). Config: `DOCKER_ENABLED` / `DOCKER_HOST`.
+- **Helm releases** — read-only, decoded straight from the Helm 3 release Secrets via the
+  Kubernetes API (no `helm` binary needed). `helm_list_releases`, `helm_get_release`
+  (summary/values/manifest/notes), `helm_history`. Config: `HELM_ENABLED`.
+- **Trivy** — vulnerability scanning via the local `trivy` binary. `trivy_scan_image`,
+  `trivy_scan_filesystem`, `trivy_version`; targets are passed as non-shell args and
+  bounded by a timeout. Config: `TRIVY_ENABLED` (+ optional `TRIVY_BIN`).
+- **SonarQube** — code quality & security, read-only. `sonarqube_list_projects`,
+  `sonarqube_project_measures`, `sonarqube_quality_gate`, `sonarqube_issues`.
+  Config: `SONARQUBE_URL` + `SONARQUBE_TOKEN`.
+
 ## 1.1.0 — Gateway v2
 
 Turns the server from an integration aggregator into a full gateway. All changes
