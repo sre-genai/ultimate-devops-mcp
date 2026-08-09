@@ -269,6 +269,28 @@ export interface OidcConfig {
   allowedAlgs: string[];
 }
 
+/** Backend for the self-service API-key store (see keystore.ts). */
+export interface KeyStoreConfig {
+  backend: "sqlite" | "postgres" | "redis";
+  sqlitePath?: string;
+  postgresUrl?: string;
+  redisUrl?: string;
+}
+
+/** Self-service key console: SSO login (OIDC auth-code) → mint/revoke API keys. */
+export interface ConsoleConfig {
+  issuer: string;
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+  sessionSecret: string;
+  scopes?: string;
+  basePath: string;
+  adminGroups: string[];
+  groupsClaim: string;
+  nameClaim: string;
+}
+
 export interface AppConfig {
   host: string;
   port: number;
@@ -287,6 +309,8 @@ export interface AppConfig {
   integrations: Integrations;
   federation?: FederationConfig;
   oidc?: OidcConfig;
+  keyStore?: KeyStoreConfig;
+  console?: ConsoleConfig;
 }
 
 function env(name: string): string | undefined {
@@ -779,6 +803,71 @@ export function loadConfig(): AppConfig {
     }
   }
 
+  // --- Self-service API-key console + key store -----------------------------
+  // The key store is created when AUTH_KEY_STORE is set OR the console is enabled
+  // (the console needs somewhere to mint keys). SQLite is the zero-config default.
+  const consoleEnabled = envBool("AUTH_CONSOLE_ENABLED");
+  let keyStore: KeyStoreConfig | undefined;
+  const ksBackend = env("AUTH_KEY_STORE");
+  if (consoleEnabled || ksBackend) {
+    const backend = (ksBackend ?? "sqlite").toLowerCase();
+    const postgresUrl = env("AUTH_KEYSTORE_POSTGRES_URL") ?? env("POSTGRES_URL");
+    const redisUrl = env("AUTH_KEYSTORE_REDIS_URL") ?? env("REDIS_URL");
+    if (!["sqlite", "postgres", "redis"].includes(backend)) {
+      errors.push(`AUTH_KEY_STORE must be sqlite|postgres|redis, got "${ksBackend}"`);
+    } else if (backend === "postgres" && !postgresUrl) {
+      errors.push("AUTH_KEY_STORE=postgres but AUTH_KEYSTORE_POSTGRES_URL (or POSTGRES_URL) is missing");
+    } else if (backend === "redis" && !redisUrl) {
+      errors.push("AUTH_KEY_STORE=redis but AUTH_KEYSTORE_REDIS_URL (or REDIS_URL) is missing");
+    } else {
+      keyStore = {
+        backend: backend as KeyStoreConfig["backend"],
+        sqlitePath: env("AUTH_KEYSTORE_SQLITE_PATH") ?? "./udm-keys.db",
+        postgresUrl,
+        redisUrl,
+      };
+    }
+  }
+
+  let consoleConfig: ConsoleConfig | undefined;
+  if (consoleEnabled) {
+    const issuer = env("AUTH_OIDC_ISSUER");
+    const clientId = env("AUTH_OIDC_CLIENT_ID");
+    const clientSecret = env("AUTH_OIDC_CLIENT_SECRET");
+    const redirectUri = env("AUTH_OIDC_REDIRECT_URI");
+    const sessionSecret = env("AUTH_SESSION_SECRET");
+    const missing = (
+      [
+        ["AUTH_OIDC_ISSUER", issuer],
+        ["AUTH_OIDC_CLIENT_ID", clientId],
+        ["AUTH_OIDC_CLIENT_SECRET", clientSecret],
+        ["AUTH_OIDC_REDIRECT_URI", redirectUri],
+        ["AUTH_SESSION_SECRET", sessionSecret],
+      ] as const
+    )
+      .filter(([, v]) => !v)
+      .map(([k]) => k);
+    if (missing.length > 0) {
+      errors.push(`AUTH_CONSOLE_ENABLED is set but required field(s) missing: ${missing.join(", ")}`);
+    } else {
+      consoleConfig = {
+        issuer: issuer!.replace(/\/+$/, ""),
+        clientId: clientId!,
+        clientSecret: clientSecret!,
+        redirectUri: redirectUri!,
+        sessionSecret: sessionSecret!,
+        scopes: env("AUTH_OIDC_SCOPES"),
+        basePath: env("AUTH_CONSOLE_BASE_PATH") ?? "/console",
+        adminGroups: (env("AUTH_OIDC_ADMIN_GROUPS") ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+        groupsClaim: env("AUTH_OIDC_GROUPS_CLAIM") ?? "groups",
+        nameClaim: env("AUTH_OIDC_NAME_CLAIM") ?? "email",
+      };
+    }
+  }
+
   // --- PagerDuty (REST API v2: token auth) ---
   const pdToken = env("PAGERDUTY_API_TOKEN");
   if (pdToken) {
@@ -919,6 +1008,8 @@ export function loadConfig(): AppConfig {
     integrations,
     federation,
     oidc,
+    keyStore,
+    console: consoleConfig,
   };
 }
 

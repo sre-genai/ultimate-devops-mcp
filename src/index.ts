@@ -11,6 +11,8 @@ import { renderPrometheus } from "./metrics.js";
 import { createMcpServer, SERVER_NAME, SERVER_VERSION } from "./server.js";
 import { type KeyIdentity, LOCAL_IDENTITY, withRequestContext } from "./audit.js";
 import { createOidcVerifier } from "./oidc.js";
+import { createKeyStore, type KeyStore } from "./keystore.js";
+import { createConsoleRouter } from "./console.js";
 
 // Outbound egress proxy: when HTTP_PROXY/HTTPS_PROXY is set (any case), route all
 // fetch()/undici traffic through it. Done at boot, before any integration makes a
@@ -29,7 +31,20 @@ setMaxResultChars(config.maxResultChars);
 
 // OIDC/JWT verifier (validates IdP-issued bearer tokens); undefined when not configured.
 const oidcVerify = config.oidc ? createOidcVerifier(config.oidc) : undefined;
-const authConfigured = Boolean(config.authToken || config.apiKeys || config.oidc);
+
+// API-key store (self-service console keys). Created when a key store or the
+// console is configured; the console mints keys into it and resolveKey() verifies
+// presented bearers against it.
+const store: KeyStore | undefined =
+  config.keyStore || config.console
+    ? createKeyStore(config.keyStore ?? { backend: "sqlite" })
+    : undefined;
+if (store) await store.init();
+
+// A configured key store or console is another way the endpoint is authenticated.
+const authConfigured = Boolean(
+  config.authToken || config.apiKeys || config.oidc || store,
+);
 
 if (!authConfigured) {
   const loopback = ["127.0.0.1", "::1", "localhost"].includes(config.host);
@@ -125,7 +140,14 @@ async function resolveKey(token: string): Promise<KeyIdentity | undefined> {
     }
   }
   if (match) return match;
-  if (oidcVerify) return oidcVerify(token);
+  if (oidcVerify) {
+    const id = await oidcVerify(token);
+    if (id) return id;
+  }
+  if (store) {
+    const id = await store.verify(token);
+    if (id) return id;
+  }
   return undefined;
 }
 
@@ -195,6 +217,30 @@ function checkOrigin(req: Request, res: Response, next: NextFunction): void {
     error: { code: -32003, message: "Forbidden: cross-origin request rejected (DNS-rebinding protection)" },
     id: null,
   });
+}
+
+// Self-service key console (its own OIDC session auth — NOT behind the /mcp
+// bearer middleware). Mounted before the /mcp routes.
+if (config.console && store) {
+  const c = config.console;
+  app.use(
+    c.basePath,
+    createConsoleRouter({
+      store,
+      login: {
+        issuer: c.issuer,
+        clientId: c.clientId,
+        clientSecret: c.clientSecret,
+        redirectUri: c.redirectUri,
+        scopes: c.scopes,
+      },
+      sessionSecret: c.sessionSecret,
+      adminGroups: c.adminGroups,
+      groupsClaim: c.groupsClaim,
+      nameClaim: c.nameClaim,
+      basePath: c.basePath,
+    }),
+  );
 }
 
 app.use("/mcp", checkOrigin, limiter, authenticate);
@@ -299,6 +345,8 @@ const httpServer = app.listen(config.port, config.host, () => {
       auth: authConfigured ? "bearer" : "DISABLED",
       scopedKeys: config.apiKeys ? Object.keys(config.apiKeys).length : 0,
       oidc: config.oidc ? config.oidc.issuer : "off",
+      keyStore: config.keyStore ? config.keyStore.backend : "off",
+      console: config.console ? config.console.basePath : "off",
       writesAllowed: config.allowWrites,
       writeDryRun: config.writeDryRun,
       integrations: enabledIntegrationNames(config),
@@ -323,6 +371,7 @@ async function shutdown(signal: string): Promise<void> {
   clearInterval(sweeper);
   await Promise.allSettled([...sessions.values()].map((s) => s.transport.close()));
   sessions.clear();
+  if (store) await store.close().catch(() => {});
   await closeAll();
   httpServer.close(() => {
     logger.info("shutdown complete");
