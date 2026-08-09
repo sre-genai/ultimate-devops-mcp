@@ -245,6 +245,30 @@ export interface Integrations {
   sonarqube?: SonarQubeConfig;
 }
 
+/**
+ * Native OIDC / JWT validation. Turns the gateway into an OAuth2 Resource Server:
+ * an IdP-issued bearer JWT (Cognito, Auth0, Azure Entra, Google, Keycloak) is
+ * validated against the issuer's JWKS and mapped to a KeyIdentity. Works
+ * alongside MCP_AUTH_TOKEN / MCP_API_KEYS (those are tried first).
+ */
+export interface OidcConfig {
+  issuer: string;
+  /** Expected `aud` claim (recommended). Undefined = audience not checked. */
+  audience?: string;
+  /** Explicit JWKS URI; discovered from the issuer's OIDC metadata when unset. */
+  jwksUri?: string;
+  /** Claim used as the audit identity name (default "email", falls back to sub). */
+  nameClaim: string;
+  /** Claim carrying the user's groups/roles (default "groups"). */
+  groupsClaim: string;
+  /** Groups that grant write access (allowWrites). */
+  adminGroups: string[];
+  /** Optional group -> tool-allowlist map; a user's allowlist is the union for their groups. */
+  groupTools?: Record<string, string[]>;
+  /** Accepted signing algorithms (default ["RS256"]). */
+  allowedAlgs: string[];
+}
+
 export interface AppConfig {
   host: string;
   port: number;
@@ -262,6 +286,7 @@ export interface AppConfig {
   trustProxy: boolean;
   integrations: Integrations;
   federation?: FederationConfig;
+  oidc?: OidcConfig;
 }
 
 function env(name: string): string | undefined {
@@ -708,6 +733,52 @@ export function loadConfig(): AppConfig {
     }
   }
 
+  // --- Native OIDC / JWT auth (validate IdP-issued bearer tokens) ---
+  // Works with Cognito, Auth0, Azure Entra, Google, Keycloak. Set the issuer and
+  // (recommended) audience; the JWKS is discovered from the issuer's metadata.
+  let oidc: OidcConfig | undefined;
+  const oidcIssuer = env("AUTH_OIDC_ISSUER");
+  if (envBool("AUTH_OIDC_ENABLED") || oidcIssuer) {
+    if (!oidcIssuer) {
+      errors.push("AUTH_OIDC_ENABLED is set but AUTH_OIDC_ISSUER is missing");
+    } else {
+      let groupTools: Record<string, string[]> | undefined;
+      const rawGT = env("AUTH_OIDC_GROUP_TOOLS");
+      if (rawGT) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(rawGT);
+        } catch {
+          errors.push("AUTH_OIDC_GROUP_TOOLS is not valid JSON (expected {group: [tools]})");
+        }
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          groupTools = {};
+          for (const [g, t] of Object.entries(parsed as Record<string, unknown>)) {
+            if (Array.isArray(t)) groupTools[g] = t.filter((x): x is string => typeof x === "string");
+          }
+        } else if (parsed !== undefined) {
+          errors.push("AUTH_OIDC_GROUP_TOOLS must be a JSON object mapping group -> [tool names]");
+        }
+      }
+      oidc = {
+        issuer: oidcIssuer.replace(/\/+$/, ""),
+        audience: env("AUTH_OIDC_AUDIENCE"),
+        jwksUri: env("AUTH_OIDC_JWKS_URI"),
+        nameClaim: env("AUTH_OIDC_NAME_CLAIM") ?? "email",
+        groupsClaim: env("AUTH_OIDC_GROUPS_CLAIM") ?? "groups",
+        adminGroups: (env("AUTH_OIDC_ADMIN_GROUPS") ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+        groupTools,
+        allowedAlgs: (env("AUTH_OIDC_ALGS") ?? "RS256")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      };
+    }
+  }
+
   // --- PagerDuty (REST API v2: token auth) ---
   const pdToken = env("PAGERDUTY_API_TOKEN");
   if (pdToken) {
@@ -847,6 +918,7 @@ export function loadConfig(): AppConfig {
     trustProxy: envBool("MCP_TRUST_PROXY"),
     integrations,
     federation,
+    oidc,
   };
 }
 

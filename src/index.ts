@@ -10,6 +10,7 @@ import { closeAll, setMaxResultChars } from "./util.js";
 import { renderPrometheus } from "./metrics.js";
 import { createMcpServer, SERVER_NAME, SERVER_VERSION } from "./server.js";
 import { type KeyIdentity, LOCAL_IDENTITY, withRequestContext } from "./audit.js";
+import { createOidcVerifier } from "./oidc.js";
 
 // Outbound egress proxy: when HTTP_PROXY/HTTPS_PROXY is set (any case), route all
 // fetch()/undici traffic through it. Done at boot, before any integration makes a
@@ -26,19 +27,24 @@ if (["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"].some((k) => proce
 const config = loadConfig();
 setMaxResultChars(config.maxResultChars);
 
-if (!config.authToken && !config.apiKeys) {
+// OIDC/JWT verifier (validates IdP-issued bearer tokens); undefined when not configured.
+const oidcVerify = config.oidc ? createOidcVerifier(config.oidc) : undefined;
+const authConfigured = Boolean(config.authToken || config.apiKeys || config.oidc);
+
+if (!authConfigured) {
   const loopback = ["127.0.0.1", "::1", "localhost"].includes(config.host);
   if (!loopback && process.env.MCP_INSECURE !== "1") {
     logger.fatal(
       `Refusing to start: MCP_HTTP_HOST=${config.host} exposes the server on the network, but ` +
-        `MCP_AUTH_TOKEN is not set — that would leave every integration's production credentials ` +
-        `open to any reachable client. Set MCP_AUTH_TOKEN, bind loopback, or set MCP_INSECURE=1 to override.`,
+        `no auth is configured — that would leave every integration's production credentials ` +
+        `open to any reachable client. Set MCP_AUTH_TOKEN / MCP_API_KEYS / AUTH_OIDC_ISSUER, ` +
+        `bind loopback, or set MCP_INSECURE=1 to override.`,
     );
     process.exit(1);
   }
   logger.warn(
-    "Neither MCP_AUTH_TOKEN nor MCP_API_KEYS is set — the /mcp endpoint is UNAUTHENTICATED " +
-      "(bound to a local interface). Set one before exposing it.",
+    "No auth configured (MCP_AUTH_TOKEN / MCP_API_KEYS / AUTH_OIDC_ISSUER) — the /mcp endpoint " +
+      "is UNAUTHENTICATED (bound to a local interface). Set one before exposing it.",
   );
 }
 
@@ -104,10 +110,11 @@ app.get("/metrics", (_req, res) => {
   res.status(200).type("text/plain; version=0.0.4").send(renderPrometheus());
 });
 
-// Resolve a presented bearer to a key identity (constant-time compare). The bare
-// MCP_AUTH_TOKEN is a full-access key; MCP_API_KEYS entries carry their own scope.
-// Every candidate is compared so a match doesn't short-circuit before the others.
-function resolveKey(token: string): KeyIdentity | undefined {
+// Resolve a presented bearer to a key identity. Static secrets (MCP_AUTH_TOKEN,
+// MCP_API_KEYS) are compared constant-time first; every candidate is checked so a
+// match doesn't short-circuit before the others. If none match and OIDC is
+// configured, the token is validated as an IdP-issued JWT.
+async function resolveKey(token: string): Promise<KeyIdentity | undefined> {
   let match: KeyIdentity | undefined;
   if (config.authToken && safeEqual(token, config.authToken)) {
     match = { name: "root", allowWrites: config.allowWrites };
@@ -117,20 +124,24 @@ function resolveKey(token: string): KeyIdentity | undefined {
       if (safeEqual(token, secret)) match = scope;
     }
   }
-  return match;
+  if (match) return match;
+  if (oidcVerify) return oidcVerify(token);
+  return undefined;
 }
 
-// Bearer-token auth (constant-time compare). Resolves the token to a key
-// identity and stashes it on res.locals for the dispatch layer (see the POST
-// handler, which carries it into request-scoped context for governance/audit).
-function authenticate(req: Request, res: Response, next: NextFunction): void {
-  if (!config.authToken && !config.apiKeys) {
+// Bearer-token auth. Resolves the token to a key identity and stashes it on
+// res.locals for the dispatch layer (see the POST handler, which carries it into
+// request-scoped context for governance/audit). Async because OIDC validation
+// performs signature/JWKS checks; all error handling is internal so it never
+// throws into Express.
+async function authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (!authConfigured) {
     next();
     return;
   }
   const header = req.headers.authorization;
   const token = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
-  const identity = token ? resolveKey(token) : undefined;
+  const identity = token ? await resolveKey(token) : undefined;
   if (identity) {
     res.locals.identity = identity;
     next();
@@ -285,8 +296,9 @@ const httpServer = app.listen(config.port, config.host, () => {
     {
       host: config.host,
       port: config.port,
-      auth: config.authToken || config.apiKeys ? "bearer" : "DISABLED",
+      auth: authConfigured ? "bearer" : "DISABLED",
       scopedKeys: config.apiKeys ? Object.keys(config.apiKeys).length : 0,
+      oidc: config.oidc ? config.oidc.issuer : "off",
       writesAllowed: config.allowWrites,
       writeDryRun: config.writeDryRun,
       integrations: enabledIntegrationNames(config),

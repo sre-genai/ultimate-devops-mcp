@@ -30,6 +30,7 @@
     "express": "^4.21.0",
     "express-rate-limit": "^7.4.0",
     "ioredis": "^5.4.1",
+    "jose": "^6.2.8",
     "kafkajs": "^2.2.4",
     "mongodb": "^6.10.0",
     "neo4j-driver": "^5.26.0",
