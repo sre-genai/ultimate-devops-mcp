@@ -94,6 +94,13 @@ Everything is env-var driven; an integration is enabled **only** when its variab
 | GitHub | `GITHUB_TOKEN` (+ `GITHUB_API_URL` for GitHub Enterprise) |
 | Bitbucket | `BITBUCKET_TOKEN` **or** `BITBUCKET_USERNAME`+`BITBUCKET_APP_PASSWORD` (+ `BITBUCKET_WORKSPACE`) |
 | Playwright | `PLAYWRIGHT_ENABLED=true` (+ `npx playwright install chromium`) |
+| Jira | `JIRA_URL` + (`JIRA_EMAIL`+`JIRA_API_TOKEN` for Cloud, or `JIRA_TOKEN` for Server/DC) |
+| Temporal | `TEMPORAL_ADDRESS` (+ `TEMPORAL_NAMESPACE`, TLS / API-key vars) |
+| PagerDuty | `PAGERDUTY_API_TOKEN` (+ `PAGERDUTY_FROM_EMAIL` for writes) |
+| Sentry | `SENTRY_TOKEN`, `SENTRY_ORG` (+ `SENTRY_URL` for self-hosted) |
+| Jenkins | `JENKINS_URL`, `JENKINS_USER`, `JENKINS_TOKEN` |
+| Slack | `SLACK_BOT_TOKEN` |
+| Vault | `VAULT_ADDR`, `VAULT_TOKEN` (+ `VAULT_KV_MOUNT`) |
 | Pinecone | `PINECONE_API_KEY` (+ optional `PINECONE_API_VERSION`) |
 | Kubecost | `KUBECOST_URL` (+ optional `KUBECOST_TOKEN`) |
 | Docker | `DOCKER_ENABLED=true` (unix socket) or `DOCKER_HOST=tcp://…` |
@@ -126,6 +133,8 @@ The presented bearer is matched constant-time against `MCP_AUTH_TOKEN` and every
 
 **Self-service API-key console** — set `AUTH_CONSOLE_ENABLED=true` to mount a small web console (default `/console`) where a human signs in via SSO (OIDC authorization-code + PKCE) and mints or revokes their *own* scoped API keys. The generated secret is shown exactly once, stored only as a SHA-256 hash, and is then accepted on the `/mcp` bearer path like any other key. The flow is *SSO login → generate a scoped key → use it as `Authorization: Bearer`*. Only members of `AUTH_OIDC_ADMIN_GROUPS` may mint write-capable keys (the server re-derives admin membership from the verified id_token, never from the form). The console reuses your OIDC issuer and needs a confidential client (`AUTH_OIDC_CLIENT_ID`/`_CLIENT_SECRET`), an `AUTH_OIDC_REDIRECT_URI`, and an `AUTH_SESSION_SECRET`; it has its own session cookie and is *not* behind the `/mcp` bearer middleware. Keys persist in a pluggable store — SQLite by default (zero-config), or Postgres/Redis via `AUTH_KEY_STORE` (see [.env.example](.env.example)).
 
+**LDAP / Active Directory** — the gateway speaks OIDC, not LDAP. To use an AD/LDAP directory, bridge it with an IdP that federates LDAP into OIDC (Keycloak or Dex — a few minutes to configure a user federation against your directory), then point `AUTH_OIDC_ISSUER` at it and map your LDAP groups via `AUTH_OIDC_ADMIN_GROUPS` / `AUTH_OIDC_GROUP_TOOLS`. This is the same path Grafana and most tools recommend over direct LDAP.
+
 **Audit logging** — every tool invocation emits one structured pino log line under the `audit` key: `{ tool, write, key, sessionId, outcome, reason?, durationMs, ts }` where `outcome` is `allowed` / `denied` / `dry-run` / `error`. Records carry no tool arguments and no secrets — only who called what, when, and how it resolved. Ship stdout to your log pipeline to retain the trail.
 
 **Write dry-run** — set `MCP_WRITE_DRYRUN=true` and every write/mutating tool returns a preview object (`{ dryRun: true, tool, note, args }`) describing what *would* happen, without touching any backend. Read tools are unaffected. Use it to rehearse a change set or to run an agent against production with writes armed but disarmed.
@@ -157,6 +166,13 @@ Write tools (⚡) are registered **only** when `MCP_ALLOW_WRITES=true`.
 | **GitLab** | `gitlab_list_projects`, `gitlab_list_pipelines`, `gitlab_pipeline_jobs`, `gitlab_job_log`, `gitlab_list_merge_requests`, `gitlab_get_merge_request`, ⚡`gitlab_trigger_pipeline`, ⚡`gitlab_retry_job` |
 | **GitHub** | `github_list_repos`, `github_list_pull_requests`, `github_get_pull_request`, `github_list_workflow_runs`, `github_workflow_run_jobs`, `github_list_issues`, `github_get_issue`, `github_list_commits`, ⚡`github_dispatch_workflow`, ⚡`github_rerun_workflow` |
 | **Bitbucket** | `bitbucket_list_repositories`, `bitbucket_list_pull_requests`, `bitbucket_get_pull_request`, `bitbucket_list_pipelines`, `bitbucket_get_pipeline`, ⚡`bitbucket_trigger_pipeline` |
+| **Jira** | `jira_search`, `jira_get_issue`, `jira_list_projects`, `jira_get_transitions`, `jira_list_boards`, `jira_list_sprints`, ⚡`jira_create_issue`, ⚡`jira_transition_issue`, ⚡`jira_add_comment`, ⚡`jira_assign_issue` |
+| **Temporal** | `temporal_list_workflows`, `temporal_describe_workflow`, `temporal_workflow_history`, `temporal_count_workflows`, `temporal_list_namespaces`, ⚡`temporal_signal_workflow`, ⚡`temporal_cancel_workflow`, ⚡`temporal_terminate_workflow` |
+| **PagerDuty** | `pagerduty_list_incidents`, `pagerduty_get_incident`, `pagerduty_list_services`, `pagerduty_list_oncalls`, ⚡`pagerduty_create_incident`, ⚡`pagerduty_update_incident_status` |
+| **Sentry** | `sentry_list_projects`, `sentry_list_issues`, `sentry_get_issue`, `sentry_list_events`, ⚡`sentry_update_issue` |
+| **Jenkins** | `jenkins_list_jobs`, `jenkins_get_job`, `jenkins_get_build`, `jenkins_build_log`, ⚡`jenkins_trigger_build` |
+| **Slack** | `slack_list_channels`, `slack_get_channel_history`, `slack_search`, ⚡`slack_post_message` |
+| **Vault** | `vault_list_mounts`, `vault_list_secrets`, `vault_read_secret`, ⚡`vault_write_secret` |
 | **Browser** | `browser_navigate`, `browser_screenshot`, `browser_extract` |
 | **Pinecone** | `pinecone_list_indexes`, `pinecone_describe_index`, `pinecone_index_stats`, `pinecone_query`, ⚡`pinecone_upsert`, ⚡`pinecone_delete` |
 | **Kubecost** | `kubecost_allocation`, `kubecost_assets` |
