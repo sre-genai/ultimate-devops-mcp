@@ -1,6 +1,6 @@
 {
   "name": "ultimate-devops-mcp",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Production-ready DevOps MCP server (Streamable HTTP) aggregating Grafana, Datadog, Prometheus, Neo4j, MongoDB, Postgres, Elasticsearch, Kafka, Redis and Playwright",
   "type": "module",
   "main": "dist/index.js",

@@ -800,6 +800,15 @@ export function loadConfig(): AppConfig {
           .map((s) => s.trim())
           .filter(Boolean),
       };
+      // Without an audience check, ANY validly-signed token from the issuer is
+      // accepted — an auth bypass on shared issuers (Google, Azure common, a
+      // shared Cognito pool). Require it unless the operator explicitly opts out.
+      if (!oidc.audience && !envBool("AUTH_OIDC_ALLOW_ANY_AUDIENCE")) {
+        errors.push(
+          "AUTH_OIDC_ISSUER is set without AUTH_OIDC_AUDIENCE — a token minted for any app from that " +
+            "issuer would authenticate. Set AUTH_OIDC_AUDIENCE, or AUTH_OIDC_ALLOW_ANY_AUDIENCE=true to accept any audience.",
+        );
+      }
     }
   }
 

@@ -23,7 +23,10 @@ function withEnv(vars, fn) {
 // ---------------------------------------------------------------------------
 
 test("oidc: issuer enables it with sensible defaults", () => {
-  const cfg = withEnv({ AUTH_OIDC_ISSUER: "https://issuer.example.com/" }, () => loadConfig());
+  const cfg = withEnv(
+    { AUTH_OIDC_ISSUER: "https://issuer.example.com/", AUTH_OIDC_AUDIENCE: "udm-api" },
+    () => loadConfig(),
+  );
   const o = cfg.oidc;
   assert.ok(o, "oidc should be configured");
   assert.equal(o.issuer, "https://issuer.example.com", "trailing slash trimmed");
@@ -35,6 +38,22 @@ test("oidc: issuer enables it with sensible defaults", () => {
 
 test("oidc: AUTH_OIDC_ENABLED without an issuer is a fatal config error", () => {
   assert.throws(() => withEnv({ AUTH_OIDC_ENABLED: "true" }, () => loadConfig()), /AUTH_OIDC_ISSUER is missing/);
+});
+
+test("oidc: issuer without audience is a fatal config error (shared-issuer bypass guard)", () => {
+  assert.throws(
+    () => withEnv({ AUTH_OIDC_ISSUER: "https://issuer.example.com" }, () => loadConfig()),
+    /AUTH_OIDC_AUDIENCE/,
+  );
+});
+
+test("oidc: AUTH_OIDC_ALLOW_ANY_AUDIENCE opts out of the audience requirement", () => {
+  const cfg = withEnv(
+    { AUTH_OIDC_ISSUER: "https://issuer.example.com", AUTH_OIDC_ALLOW_ANY_AUDIENCE: "true" },
+    () => loadConfig(),
+  );
+  assert.ok(cfg.oidc, "oidc configured");
+  assert.equal(cfg.oidc.audience, undefined);
 });
 
 test("oidc: audience, claims, admin groups and group->tools map parse", () => {

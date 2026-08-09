@@ -49,7 +49,7 @@ export interface KeyStore {
 const SECRET_PREFIX = "udm_live_";
 
 /** sha256(secret) as hex — the only representation of a secret we ever store. */
-export function hashSecret(secret: string): string {
+function hashSecret(secret: string): string {
   return createHash("sha256").update(secret).digest("hex");
 }
 

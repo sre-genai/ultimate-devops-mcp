@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.3.0 — Native SSO + self-service API keys
+
+Enterprise auth built into the gateway — validate IdP tokens directly and let
+users mint their own scoped keys after logging in. All additive; the static
+`MCP_AUTH_TOKEN` / `MCP_API_KEYS` keep working and are tried first.
+
+### Added
+- **Native OIDC/JWT auth** — set `AUTH_OIDC_ISSUER` (+ `AUTH_OIDC_AUDIENCE`) and
+  the gateway validates IdP-issued bearer JWTs against the issuer's JWKS (via
+  `jose`), mapping claims to the scope model (`AUTH_OIDC_ADMIN_GROUPS` → writes,
+  optional `AUTH_OIDC_GROUP_TOOLS` allowlists). Works with AWS Cognito, Auth0,
+  Azure Entra ID, Google, and Keycloak. Audience is required unless
+  `AUTH_OIDC_ALLOW_ANY_AUDIENCE=true` (guards against shared-issuer token reuse).
+- **Self-service API-key console** — `AUTH_CONSOLE_ENABLED` mounts a web console
+  where a user logs in via OIDC (auth-code + PKCE) and generates scoped,
+  revocable API keys. Keys are `udm_live_…`, stored only as SHA-256 hashes and
+  shown once; write-capable keys require admin-group membership. Signed session
+  cookie, CSRF on every mutation, and the login `id_token` is signature-verified.
+- **Pluggable key store** — `AUTH_KEY_STORE` selects SQLite (default, no external
+  service), Postgres, or Redis for the console's keys.
+
+### Security
+- Cleared all `npm audit` advisories (js-yaml, ip-address, undici).
+
 ## 1.2.0 — Six new integrations
 
 Adds six integrations (22 → 28), extending coverage into vector databases,
