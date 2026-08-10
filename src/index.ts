@@ -1,4 +1,5 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import express, { type NextFunction, type Request, type Response } from "express";
 import rateLimit from "express-rate-limit";
 import { setGlobalDispatcher, EnvHttpProxyAgent } from "undici";
@@ -13,6 +14,7 @@ import { type KeyIdentity, LOCAL_IDENTITY, withRequestContext } from "./audit.js
 import { createOidcVerifier } from "./oidc.js";
 import { createKeyStore, type KeyStore } from "./keystore.js";
 import { createConsoleRouter } from "./console.js";
+import { createLdapAuthenticator } from "./ldap.js";
 
 // Outbound egress proxy: when HTTP_PROXY/HTTPS_PROXY is set (any case), route all
 // fetch()/undici traffic through it. Done at boot, before any integration makes a
@@ -40,6 +42,48 @@ const store: KeyStore | undefined =
     ? createKeyStore(config.keyStore ?? { backend: "sqlite" })
     : undefined;
 if (store) await store.init();
+
+// First-run bootstrap admin: when MCP_BOOTSTRAP_ADMIN is enabled and NO other
+// auth is configured, mint (or reuse) a random full-access admin token instead
+// of starting unauthenticated. It is persisted to a 0600 file so it survives
+// restarts, and printed once at startup. No credential is ever hardcoded — set
+// MCP_AUTH_TOKEN to take over in production.
+const bootstrapWanted = ["1", "true", "yes", "on"].includes(
+  (process.env.MCP_BOOTSTRAP_ADMIN ?? "").trim().toLowerCase(),
+);
+let bootstrapToken: string | undefined;
+let bootstrapFile: string | undefined;
+if (bootstrapWanted && !config.authToken && !config.apiKeys && !config.oidc && !store) {
+  bootstrapFile = (process.env.MCP_BOOTSTRAP_ADMIN_FILE ?? ".mcp-bootstrap-admin").trim() || ".mcp-bootstrap-admin";
+  try {
+    if (existsSync(bootstrapFile)) {
+      const existing = readFileSync(bootstrapFile, "utf8").trim();
+      if (existing) bootstrapToken = existing;
+    }
+  } catch {
+    /* unreadable — fall through and generate a fresh one */
+  }
+  if (!bootstrapToken) {
+    bootstrapToken = `udm_admin_${randomBytes(24).toString("base64url")}`;
+    try {
+      writeFileSync(bootstrapFile, `${bootstrapToken}\n`, { mode: 0o600 });
+      chmodSync(bootstrapFile, 0o600);
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "could not persist the bootstrap admin token; it will change on the next restart",
+      );
+    }
+  }
+  config.authToken = bootstrapToken; // treated exactly like MCP_AUTH_TOKEN (root, full access)
+  logger.warn(
+    `first-run admin token generated (no auth was configured):\n` +
+      `      ${bootstrapToken}\n` +
+      `    use it as   Authorization: Bearer <token>\n` +
+      `    saved to    ${bootstrapFile} (mode 0600)\n` +
+      `    set MCP_AUTH_TOKEN (or MCP_API_KEYS / AUTH_OIDC_ISSUER) in production to replace it.`,
+  );
+}
 
 // A configured key store or console is another way the endpoint is authenticated.
 const authConfigured = Boolean(
@@ -227,18 +271,21 @@ if (config.console && store) {
     c.basePath,
     createConsoleRouter({
       store,
-      login: {
-        issuer: c.issuer,
-        clientId: c.clientId,
-        clientSecret: c.clientSecret,
-        redirectUri: c.redirectUri,
-        scopes: c.scopes,
-      },
       sessionSecret: c.sessionSecret,
-      adminGroups: c.adminGroups,
-      groupsClaim: c.groupsClaim,
-      nameClaim: c.nameClaim,
       basePath: c.basePath,
+      adminGroups: c.adminGroups,
+      login: c.oidc
+        ? {
+            issuer: c.oidc.issuer,
+            clientId: c.oidc.clientId,
+            clientSecret: c.oidc.clientSecret,
+            redirectUri: c.oidc.redirectUri,
+            scopes: c.oidc.scopes,
+          }
+        : undefined,
+      groupsClaim: c.oidc?.groupsClaim,
+      nameClaim: c.oidc?.nameClaim,
+      ldap: c.ldap ? createLdapAuthenticator(c.ldap) : undefined,
     }),
   );
 }

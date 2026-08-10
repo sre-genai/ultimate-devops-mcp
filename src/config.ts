@@ -278,17 +278,43 @@ export interface KeyStoreConfig {
 }
 
 /** Self-service key console: SSO login (OIDC auth-code) → mint/revoke API keys. */
-export interface ConsoleConfig {
+export interface ConsoleOidcConfig {
   issuer: string;
   clientId: string;
   clientSecret: string;
   redirectUri: string;
-  sessionSecret: string;
   scopes?: string;
-  basePath: string;
-  adminGroups: string[];
   groupsClaim: string;
   nameClaim: string;
+}
+export interface LdapConfig {
+  /** ldap://host:389 or ldaps://host:636 */
+  url: string;
+  /** Service-account DN used to search for the user (optional; else anonymous search). */
+  bindDN?: string;
+  bindPassword?: string;
+  /** Subtree to search for the user, e.g. ou=people,dc=corp,dc=io */
+  searchBase: string;
+  /** Filter with a {{username}} placeholder, e.g. (uid={{username}}) or (sAMAccountName={{username}}). */
+  searchFilter: string;
+  /** Attribute holding the user's group memberships (default memberOf). */
+  groupsAttribute: string;
+  /** Attribute holding the display name (default cn). */
+  nameAttribute: string;
+  /** Group names (or CNs) that grant admin (write-capable keys). */
+  adminGroups: string[];
+  /** Verify the server cert for ldaps:// (default true). */
+  tlsRejectUnauthorized: boolean;
+}
+export interface ConsoleConfig {
+  sessionSecret: string;
+  basePath: string;
+  /** Union of OIDC + LDAP admin groups, used to gate write-capable key minting. */
+  adminGroups: string[];
+  /** OIDC (SSO) login — optional. */
+  oidc?: ConsoleOidcConfig;
+  /** LDAP username/password login — optional. */
+  ldap?: LdapConfig;
 }
 
 export interface AppConfig {
@@ -838,41 +864,82 @@ export function loadConfig(): AppConfig {
     }
   }
 
+  const splitList = (v: string | undefined): string[] =>
+    (v ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+
   let consoleConfig: ConsoleConfig | undefined;
   if (consoleEnabled) {
+    const sessionSecret = env("AUTH_SESSION_SECRET");
+    if (!sessionSecret) errors.push("AUTH_CONSOLE_ENABLED is set but AUTH_SESSION_SECRET is missing");
+
+    // OIDC (SSO) login — enabled when any client field is present; then all are required.
+    let consoleOidc: ConsoleOidcConfig | undefined;
     const issuer = env("AUTH_OIDC_ISSUER");
     const clientId = env("AUTH_OIDC_CLIENT_ID");
     const clientSecret = env("AUTH_OIDC_CLIENT_SECRET");
     const redirectUri = env("AUTH_OIDC_REDIRECT_URI");
-    const sessionSecret = env("AUTH_SESSION_SECRET");
-    const missing = (
-      [
-        ["AUTH_OIDC_ISSUER", issuer],
-        ["AUTH_OIDC_CLIENT_ID", clientId],
-        ["AUTH_OIDC_CLIENT_SECRET", clientSecret],
-        ["AUTH_OIDC_REDIRECT_URI", redirectUri],
-        ["AUTH_SESSION_SECRET", sessionSecret],
-      ] as const
-    )
-      .filter(([, v]) => !v)
-      .map(([k]) => k);
-    if (missing.length > 0) {
-      errors.push(`AUTH_CONSOLE_ENABLED is set but required field(s) missing: ${missing.join(", ")}`);
-    } else {
+    if (clientId || clientSecret || redirectUri) {
+      const missing = (
+        [
+          ["AUTH_OIDC_ISSUER", issuer],
+          ["AUTH_OIDC_CLIENT_ID", clientId],
+          ["AUTH_OIDC_CLIENT_SECRET", clientSecret],
+          ["AUTH_OIDC_REDIRECT_URI", redirectUri],
+        ] as const
+      )
+        .filter(([, v]) => !v)
+        .map(([k]) => k);
+      if (missing.length > 0) {
+        errors.push(`Console OIDC login is missing: ${missing.join(", ")}`);
+      } else {
+        consoleOidc = {
+          issuer: issuer!.replace(/\/+$/, ""),
+          clientId: clientId!,
+          clientSecret: clientSecret!,
+          redirectUri: redirectUri!,
+          scopes: env("AUTH_OIDC_SCOPES"),
+          groupsClaim: env("AUTH_OIDC_GROUPS_CLAIM") ?? "groups",
+          nameClaim: env("AUTH_OIDC_NAME_CLAIM") ?? "email",
+        };
+      }
+    }
+
+    // LDAP (username/password) login — enabled by AUTH_LDAP_URL.
+    let consoleLdap: LdapConfig | undefined;
+    const ldapUrl = env("AUTH_LDAP_URL");
+    if (ldapUrl) {
+      const searchBase = env("AUTH_LDAP_SEARCH_BASE");
+      if (!searchBase) {
+        errors.push("AUTH_LDAP_URL is set but AUTH_LDAP_SEARCH_BASE is missing");
+      } else {
+        consoleLdap = {
+          url: ldapUrl,
+          bindDN: env("AUTH_LDAP_BIND_DN"),
+          bindPassword: env("AUTH_LDAP_BIND_PASSWORD"),
+          searchBase,
+          searchFilter: env("AUTH_LDAP_SEARCH_FILTER") ?? "(uid={{username}})",
+          groupsAttribute: env("AUTH_LDAP_GROUPS_ATTR") ?? "memberOf",
+          nameAttribute: env("AUTH_LDAP_NAME_ATTR") ?? "cn",
+          adminGroups: splitList(env("AUTH_LDAP_ADMIN_GROUPS")),
+          tlsRejectUnauthorized: envBool("AUTH_LDAP_TLS_REJECT_UNAUTHORIZED", true),
+        };
+      }
+    }
+
+    if (sessionSecret && !consoleOidc && !consoleLdap) {
+      errors.push(
+        "AUTH_CONSOLE_ENABLED requires a login method: OIDC (AUTH_OIDC_CLIENT_ID/_CLIENT_SECRET/_REDIRECT_URI/_ISSUER) or LDAP (AUTH_LDAP_URL/_SEARCH_BASE)",
+      );
+    }
+    if (sessionSecret && (consoleOidc || consoleLdap)) {
       consoleConfig = {
-        issuer: issuer!.replace(/\/+$/, ""),
-        clientId: clientId!,
-        clientSecret: clientSecret!,
-        redirectUri: redirectUri!,
-        sessionSecret: sessionSecret!,
-        scopes: env("AUTH_OIDC_SCOPES"),
+        sessionSecret,
         basePath: env("AUTH_CONSOLE_BASE_PATH") ?? "/console",
-        adminGroups: (env("AUTH_OIDC_ADMIN_GROUPS") ?? "")
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean),
-        groupsClaim: env("AUTH_OIDC_GROUPS_CLAIM") ?? "groups",
-        nameClaim: env("AUTH_OIDC_NAME_CLAIM") ?? "email",
+        adminGroups: Array.from(
+          new Set([...splitList(env("AUTH_OIDC_ADMIN_GROUPS")), ...(consoleLdap?.adminGroups ?? [])]),
+        ),
+        oidc: consoleOidc,
+        ldap: consoleLdap,
       };
     }
   }

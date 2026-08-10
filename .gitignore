@@ -9,3 +9,6 @@ udm.env
 udm-sealed.yaml
 *.log
 .DS_Store
+.claude
+# First-run bootstrap admin token (MCP_BOOTSTRAP_ADMIN)
+.mcp-bootstrap-admin

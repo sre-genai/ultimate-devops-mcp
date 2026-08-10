@@ -87,6 +87,31 @@ config:
   # TEMPORAL_TLS: "true"
   # PLAYWRIGHT_ENABLED: "true"   # requires the WITH_BROWSER image variant
 
+  # ---- Self-service key console + LDAP/AD login (optional) --------------------
+  # Serve a web console where users sign in and mint their own scoped API keys.
+  # Non-secret settings live here; AUTH_SESSION_SECRET and AUTH_LDAP_BIND_PASSWORD
+  # go in `secrets` (or `existingSecret`) below.
+  # AUTH_CONSOLE_ENABLED: "true"
+  # AUTH_CONSOLE_BASE_PATH: "/console"
+  # -- Login method: LDAP / Active Directory (username + password) --
+  # AUTH_LDAP_URL: "ldap://ldap.corp.svc:389"        # or ldaps://ldap.corp.svc:636
+  # AUTH_LDAP_BIND_DN: "cn=svc,dc=corp,dc=io"        # service account used to search
+  # AUTH_LDAP_SEARCH_BASE: "ou=people,dc=corp,dc=io"
+  # AUTH_LDAP_SEARCH_FILTER: "(uid={{username}})"    # AD: (sAMAccountName={{username}})
+  # AUTH_LDAP_GROUPS_ATTR: "memberOf"
+  # AUTH_LDAP_NAME_ATTR: "cn"
+  # AUTH_LDAP_ADMIN_GROUPS: "platform-admins"        # these groups may mint write keys
+  # AUTH_LDAP_TLS_REJECT_UNAUTHORIZED: "true"        # verify server cert on ldaps://
+  # -- OR login method: OIDC / SSO (Cognito/Okta/Auth0/Entra/Keycloak) --
+  # AUTH_OIDC_ISSUER: "https://idp.example.com"
+  # AUTH_OIDC_CLIENT_ID: "udm-console"
+  # AUTH_OIDC_REDIRECT_URI: "https://mcp.example.com/console/callback"
+  # AUTH_OIDC_ADMIN_GROUPS: "platform-admins"
+  # -- Key store (where minted keys are persisted). SQLite needs a writable volume;
+  #    for HA/multi-replica use postgres or redis (endpoints here, creds in secrets).
+  # AUTH_KEY_STORE: "postgres"                        # sqlite | postgres | redis
+  # AUTH_KEYSTORE_SQLITE_PATH: "/data/keys.db"        # sqlite only (mount a PVC)
+
 # -----------------------------------------------------------------------------
 # Secrets — sensitive env vars (tokens, passwords). Two mutually-exclusive modes:
 #
@@ -120,6 +145,11 @@ secrets:
   # GITHUB_TOKEN: "..."
   # BITBUCKET_TOKEN: "..."          # or BITBUCKET_APP_PASSWORD
   # TEMPORAL_API_KEY: "..."
+  # ---- Console + LDAP login secrets ----
+  # AUTH_SESSION_SECRET: "..."       # signs console session cookies (REQUIRED for the console)
+  # AUTH_LDAP_BIND_PASSWORD: "..."   # LDAP service-account password
+  # AUTH_KEYSTORE_POSTGRES_URL: "postgres://user:pass@pg:5432/keys"  # if AUTH_KEY_STORE=postgres
+  # AUTH_KEYSTORE_REDIS_URL: "redis://:pass@redis:6379"              # if AUTH_KEY_STORE=redis
 
 # Escape hatch: allow the pod to run exposed with NO auth token (sets
 # MCP_INSECURE=1). Leaves every integration's production credentials open to any
