@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.4.0 — LDAP login, first-run bootstrap, token login
+
+Rounds out the self-service console's auth: it now logs users in via OIDC **and/or**
+LDAP, and falls back to a static token when no IdP is configured. Also adds a
+first-run bootstrap credential and a redesigned console UI. All additive.
+
+### Added
+- **Native LDAP / Active Directory login** — the console authenticates a username +
+  password directly against LDAP (search-then-bind), maps `memberOf` groups to admin
+  (write-capable key minting), and never stores passwords. Config: `AUTH_LDAP_URL` +
+  `AUTH_LDAP_SEARCH_BASE` (+ optional service account). Both LDAP and OIDC can be on
+  at once — the login page links to SSO.
+- **Static-token console login** — when neither OIDC nor LDAP is set, the login page
+  accepts a pasted `MCP_AUTH_TOKEN` / `MCP_API_KEYS` value (a write-capable token
+  opens an admin session). No local user/password store.
+- **First-run bootstrap admin** — `MCP_BOOTSTRAP_ADMIN=true` mints a random
+  full-access token (persisted `0600`, printed once) instead of running
+  unauthenticated when no other auth is configured. No credential is ever hardcoded.
+- **Redesigned self-service key console** — branded top bar, status-pill key table,
+  copy-to-clipboard one-time secret, theme-aware light/dark.
+
 ## 1.3.0 — Native SSO + self-service API keys
 
 Enterprise auth built into the gateway — validate IdP tokens directly and let
