@@ -315,6 +315,8 @@ export interface ConsoleConfig {
   oidc?: ConsoleOidcConfig;
   /** LDAP username/password login — optional. */
   ldap?: LdapConfig;
+  /** Static-token login (paste MCP_AUTH_TOKEN / MCP_API_KEYS) when no IdP/LDAP. */
+  tokenLogin: boolean;
 }
 
 export interface AppConfig {
@@ -926,12 +928,17 @@ export function loadConfig(): AppConfig {
       }
     }
 
-    if (sessionSecret && !consoleOidc && !consoleLdap) {
+    // Fallback when no IdP/LDAP: log in by pasting a static MCP_AUTH_TOKEN /
+    // MCP_API_KEYS value (no local user/password store).
+    const hasStaticKeys = Boolean(env("MCP_AUTH_TOKEN")) || Boolean(apiKeys && Object.keys(apiKeys).length > 0);
+    const tokenLogin = !consoleOidc && !consoleLdap && hasStaticKeys;
+
+    if (sessionSecret && !consoleOidc && !consoleLdap && !tokenLogin) {
       errors.push(
-        "AUTH_CONSOLE_ENABLED requires a login method: OIDC (AUTH_OIDC_CLIENT_ID/_CLIENT_SECRET/_REDIRECT_URI/_ISSUER) or LDAP (AUTH_LDAP_URL/_SEARCH_BASE)",
+        "AUTH_CONSOLE_ENABLED requires a login method: OIDC (AUTH_OIDC_CLIENT_ID/_CLIENT_SECRET/_REDIRECT_URI/_ISSUER), LDAP (AUTH_LDAP_URL/_SEARCH_BASE), or a static token (MCP_AUTH_TOKEN / MCP_API_KEYS)",
       );
     }
-    if (sessionSecret && (consoleOidc || consoleLdap)) {
+    if (sessionSecret && (consoleOidc || consoleLdap || tokenLogin)) {
       consoleConfig = {
         sessionSecret,
         basePath: env("AUTH_CONSOLE_BASE_PATH") ?? "/console",
@@ -940,6 +947,7 @@ export function loadConfig(): AppConfig {
         ),
         oidc: consoleOidc,
         ldap: consoleLdap,
+        tokenLogin,
       };
     }
   }

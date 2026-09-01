@@ -28,13 +28,15 @@ export function createConsoleRouter(opts: {
   login?: { issuer: string; clientId: string; clientSecret: string; redirectUri: string; scopes?: string };
   /** LDAP username/password authenticator — optional. */
   ldap?: (username: string, password: string) => Promise<{ sub: string; name: string; groups: string[] } | undefined>;
+  /** Static-token login — verifies a pasted MCP_AUTH_TOKEN / MCP_API_KEYS value. Optional. */
+  verifyToken?: (token: string) => { name: string; allowWrites: boolean } | undefined;
   adminGroups?: string[];
   groupsClaim?: string;
   nameClaim?: string;
   basePath?: string;
 }): Router {
-  if (!opts.login && !opts.ldap) {
-    throw new Error("console requires a login method: an OIDC config or an LDAP authenticator");
+  if (!opts.login && !opts.ldap && !opts.verifyToken) {
+    throw new Error("console requires a login method: OIDC, LDAP, or a static-token verifier");
   }
   const basePath = normalizeBasePath(opts.basePath ?? "/console");
   const adminGroups = opts.adminGroups ?? [];
@@ -162,8 +164,12 @@ export function createConsoleRouter(opts: {
     const m = /^cn=([^,]+)/i.exec(group);
     return m ? m[1] : group;
   };
+  // Reserved group that grants admin regardless of adminGroups — used by
+  // token-login to carry the presenting key's write permission into the session.
+  const ADMIN_SENTINEL = "__console_token_admin__";
   const isAdmin = (groups: string[]): boolean =>
-    adminGroups.length > 0 && groups.some((g) => adminGroups.includes(g) || adminGroups.includes(cnOf(g)));
+    groups.includes(ADMIN_SENTINEL) ||
+    (adminGroups.length > 0 && groups.some((g) => adminGroups.includes(g) || adminGroups.includes(cnOf(g))));
 
   // --- Routes --------------------------------------------------------------
 
@@ -204,13 +210,17 @@ export function createConsoleRouter(opts: {
       .send(page("Login unavailable", `<p>${escapeHtml("The identity provider could not be reached. Please try again.")}</p>`));
   }
 
-  // GET /login — LDAP username/password form if configured; else start SSO.
+  // Render the login form for whichever method is configured (LDAP or token).
+  const loginForm = (nonce: string, error?: string): string =>
+    opts.ldap ? loginPage(nonce, Boolean(opts.login), error) : tokenLoginPage(nonce, error);
+
+  // GET /login — form login (LDAP or token) if configured; else start SSO.
   router.get("/login", async (req: Request, res: Response) => {
     if (await readSession(req)) return res.redirect(basePath);
-    if (opts.ldap) {
+    if (opts.ldap || opts.verifyToken) {
       const nonce = randomBytes(16).toString("base64url");
       setCookie(res, LOGIN_CSRF_COOKIE, nonce, FLOW_TTL_SEC);
-      return res.type("html").send(loginPage(nonce, Boolean(opts.login)));
+      return res.type("html").send(loginForm(nonce));
     }
     try {
       await startOidcLogin(res);
@@ -219,7 +229,7 @@ export function createConsoleRouter(opts: {
     }
   });
 
-  // GET /login/sso — force the SSO flow (linked from the LDAP form).
+  // GET /login/sso — force the SSO flow (linked from the form when both exist).
   if (opts.login) {
     router.get("/login/sso", async (_req: Request, res: Response) => {
       try {
@@ -230,9 +240,8 @@ export function createConsoleRouter(opts: {
     });
   }
 
-  // POST /login — username/password validated against LDAP.
-  if (opts.ldap) {
-    const ldapAuth = opts.ldap;
+  // POST /login — LDAP username/password, or a pasted static API token.
+  if (opts.ldap || opts.verifyToken) {
     router.post("/login", async (req: Request, res: Response) => {
       const cookieNonce = parseCookies(req.headers.cookie)[LOGIN_CSRF_COOKIE] ?? "";
       const formNonce = String(req.body?.csrf ?? "");
@@ -240,23 +249,33 @@ export function createConsoleRouter(opts: {
       const reshow = (message: string, status = 401) => {
         const nonce = randomBytes(16).toString("base64url");
         setCookie(res, LOGIN_CSRF_COOKIE, nonce, FLOW_TTL_SEC);
-        res.status(status).type("html").send(loginPage(nonce, Boolean(opts.login), message));
+        res.status(status).type("html").send(loginForm(nonce, message));
       };
       if (!cookieNonce || !safeEqual(formNonce, cookieNonce)) {
         return reshow("Your sign-in session expired. Please try again.");
       }
-      const username = String(req.body?.username ?? "").trim();
-      const password = String(req.body?.password ?? "");
-      if (!username || !password) return reshow("Enter your username and password.");
-      let user;
-      try {
-        user = await ldapAuth(username, password);
-      } catch (err) {
-        logger.warn({ err: errMsg(err) }, "console: ldap auth error");
-        return reshow("The directory could not be reached. Please try again.", 502);
+      if (opts.ldap) {
+        const ldapAuth = opts.ldap;
+        const username = String(req.body?.username ?? "").trim();
+        const password = String(req.body?.password ?? "");
+        if (!username || !password) return reshow("Enter your username and password.");
+        let user;
+        try {
+          user = await ldapAuth(username, password);
+        } catch (err) {
+          logger.warn({ err: errMsg(err) }, "console: ldap auth error");
+          return reshow("The directory could not be reached. Please try again.", 502);
+        }
+        if (!user) return reshow("Invalid username or password.");
+        await establishSession(res, user);
+      } else {
+        const token = String(req.body?.token ?? "").trim();
+        if (!token) return reshow("Paste your API token.");
+        const id = opts.verifyToken!(token);
+        if (!id) return reshow("Invalid API token.");
+        // The key's own write permission decides admin (can mint write keys).
+        await establishSession(res, { sub: id.name, name: id.name, groups: id.allowWrites ? [ADMIN_SENTINEL] : [] });
       }
-      if (!user) return reshow("Invalid username or password.");
-      await establishSession(res, user);
       return res.redirect(basePath);
     });
   }
@@ -447,6 +466,28 @@ export function createConsoleRouter(opts: {
   });
 
   // --- HTML rendering (all interpolated values escaped) --------------------
+
+  function tokenLoginPage(nonce: string, error?: string): string {
+    const err = error ? `<div class="loginerr">${escapeHtml(error)}</div>` : "";
+    const body = `
+      <div class="login">
+        <span class="eyebrow">Sign in</span>
+        <h1>Ultimate DevOps console</h1>
+        <p class="sub">Paste an API token — your <span class="mono">MCP_AUTH_TOKEN</span> or a key from <span class="mono">MCP_API_KEYS</span> — to manage your keys. A write-capable token can mint write keys.</p>
+        <section class="card">
+          ${err}
+          <form method="post" action="${escapeHtml(`${basePath}/login`)}" class="loginform">
+            <input type="hidden" name="csrf" value="${escapeHtml(nonce)}">
+            <div class="field">
+              <label for="t">API token</label>
+              <input id="t" name="token" type="password" autocomplete="off" spellcheck="false" required autofocus placeholder="paste token">
+            </div>
+            <button type="submit" class="btn primary loginbtn">Sign in</button>
+          </form>
+        </section>
+      </div>`;
+    return page("Sign in", body, { basePath });
+  }
 
   function loginPage(nonce: string, ssoAvailable: boolean, error?: string): string {
     const err = error ? `<div class="loginerr">${escapeHtml(error)}</div>` : "";

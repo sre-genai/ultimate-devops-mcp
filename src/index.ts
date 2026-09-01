@@ -286,6 +286,21 @@ if (config.console && store) {
       groupsClaim: c.oidc?.groupsClaim,
       nameClaim: c.oidc?.nameClaim,
       ldap: c.ldap ? createLdapAuthenticator(c.ldap) : undefined,
+      // No IdP/LDAP → log in by pasting a static token; verified against the
+      // same MCP_AUTH_TOKEN / MCP_API_KEYS that guard /mcp.
+      verifyToken: c.tokenLogin
+        ? (token) => {
+            if (config.authToken && safeEqual(token, config.authToken)) {
+              return { name: "root", allowWrites: config.allowWrites };
+            }
+            if (config.apiKeys) {
+              for (const [secret, scope] of Object.entries(config.apiKeys)) {
+                if (safeEqual(token, secret)) return { name: scope.name, allowWrites: scope.allowWrites };
+              }
+            }
+            return undefined;
+          }
+        : undefined,
     }),
   );
 }
