@@ -197,3 +197,64 @@ test("session can be terminated with DELETE and is gone afterwards", async () =>
   const res = await post({ jsonrpc: "2.0", id: 6, method: "tools/list" }, { session });
   assert.equal(res.status, 400);
 });
+
+// --- Per-system path routing: /mcp/<system> narrows a session to one integration ---
+
+async function toolPrefixesAt(path) {
+  const headers = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+    authorization: `Bearer ${TOKEN}`,
+  };
+  const initRes = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" } },
+    }),
+  });
+  if (initRes.status !== 200) return { status: initRes.status, prefixes: [] };
+  const session = initRes.headers.get("mcp-session-id");
+  await initRes.text();
+  await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { ...headers, "mcp-session-id": session },
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+  });
+  const listRes = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { ...headers, "mcp-session-id": session },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+  });
+  const { result } = sseData(await listRes.text());
+  const prefixes = new Set(result.tools.map((t) => t.name.split("_")[0]));
+  return { status: 200, prefixes: [...prefixes].sort() };
+}
+
+test("/mcp/<system> scopes tools/list to that integration only", async () => {
+  const pg = await toolPrefixesAt("/mcp/postgres");
+  assert.deepEqual(pg.prefixes, ["postgres"]);
+  const redis = await toolPrefixesAt("/mcp/redis");
+  assert.deepEqual(redis.prefixes, ["redis"]);
+});
+
+test("/mcp (no suffix) still exposes the full aggregate", async () => {
+  const all = await toolPrefixesAt("/mcp");
+  assert.ok(all.prefixes.includes("postgres") && all.prefixes.includes("redis"));
+  assert.ok(all.prefixes.length > 2, "aggregate should expose more than one system");
+});
+
+test("/mcp/<unknown> is rejected with 404", async () => {
+  const res = await toolPrefixesAt("/mcp/nope");
+  assert.equal(res.status, 404);
+});
+
+test("/mcp/<system> still requires auth (path is not a bypass)", async () => {
+  const res = await fetch(`${BASE}/mcp/postgres`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+  });
+  assert.equal(res.status, 401);
+});

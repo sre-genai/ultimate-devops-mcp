@@ -8,12 +8,14 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, enabledIntegrationNames } from "./config.js";
 import { logger } from "./logger.js";
 import { closeAll, setMaxResultChars } from "./util.js";
-import { renderPrometheus } from "./metrics.js";
-import { createMcpServer, SERVER_NAME, SERVER_VERSION } from "./server.js";
-import { type KeyIdentity, LOCAL_IDENTITY, withRequestContext } from "./audit.js";
+import { renderPrometheus, snapshot as metricsSnapshot, getSeries, startSampler } from "./metrics.js";
+import { createMcpServer, SERVER_NAME, SERVER_VERSION, INTEGRATION_NAMES } from "./server.js";
+import { type KeyIdentity, LOCAL_IDENTITY, withRequestContext, auditRecent } from "./audit.js";
+import { scopeIdentityToSystem } from "./toolscope.js";
 import { createOidcVerifier } from "./oidc.js";
 import { createKeyStore, type KeyStore } from "./keystore.js";
 import { createConsoleRouter } from "./console.js";
+import { healthStatus } from "./health.js";
 import { createLdapAuthenticator } from "./ldap.js";
 
 // Outbound egress proxy: when HTTP_PROXY/HTTPS_PROXY is set (any case), route all
@@ -265,6 +267,43 @@ function checkOrigin(req: Request, res: Response, next: NextFunction): void {
 
 // Self-service key console (its own OIDC session auth — NOT behind the /mcp
 // bearer middleware). Mounted before the /mcp routes.
+// Sample tool-call rates for the console's usage sparkline.
+startSampler();
+
+// Read-only settings summary for the console Settings page.
+const consoleSettings: Array<[string, string]> = [
+  ["Server version", SERVER_VERSION],
+  ["Bind address", `${config.host}:${config.port}`],
+  [
+    "API auth (/mcp)",
+    [
+      config.authToken && "static token",
+      config.apiKeys && `${Object.keys(config.apiKeys).length} scoped keys`,
+      config.oidc && "OIDC/JWT",
+      bootstrapToken && "first-run bootstrap",
+      store && "console-minted keys",
+    ]
+      .filter(Boolean)
+      .join(", ") || "none (open on loopback)",
+  ],
+  ["Writes", config.allowWrites ? "enabled" : "read-only (write tools not registered)"],
+  ["Write dry-run", config.writeDryRun ? "on" : "off"],
+  ["Rate limit", `${config.rateLimitPerMinute} req/min`],
+  ["Session idle timeout", `${Math.round(config.sessionIdleTimeoutMs / 60000)} min`],
+  ["Max result chars", String(config.maxResultChars)],
+  ["Console login", config.console ? [config.console.oidc && "OIDC", config.console.ldap && "LDAP", config.console.tokenLogin && "token"].filter(Boolean).join(" · ") : "off"],
+  [
+    "RBAC roles",
+    config.console
+      ? `admin: ${config.console.adminGroups.join(", ") || "—"} · editor: ${config.console.editorGroups.join(", ") || "—"} · default: ${config.console.defaultRole}`
+      : "off",
+  ],
+  ["Key store", config.keyStore?.backend ?? (config.console ? "sqlite" : "—")],
+  ["Integrations", `${enabledIntegrationNames(config).length} active of ${INTEGRATION_NAMES.length}`],
+  ["Federation", config.federation ? `${config.federation.servers.length} server(s)` : "off"],
+  ["Egress proxy", process.env.HTTPS_PROXY || process.env.HTTP_PROXY ? "configured" : "off"],
+];
+
 if (config.console && store) {
   const c = config.console;
   app.use(
@@ -274,6 +313,9 @@ if (config.console && store) {
       sessionSecret: c.sessionSecret,
       basePath: c.basePath,
       adminGroups: c.adminGroups,
+      editorGroups: c.editorGroups,
+      viewerGroups: c.viewerGroups,
+      defaultRole: c.defaultRole,
       login: c.oidc
         ? {
             issuer: c.oidc.issuer,
@@ -285,6 +327,12 @@ if (config.console && store) {
         : undefined,
       groupsClaim: c.oidc?.groupsClaim,
       nameClaim: c.oidc?.nameClaim,
+      status: {
+        version: SERVER_VERSION,
+        writesAllowed: config.allowWrites,
+        supported: INTEGRATION_NAMES,
+        active: enabledIntegrationNames(config),
+      },
       ldap: c.ldap ? createLdapAuthenticator(c.ldap) : undefined,
       // No IdP/LDAP → log in by pasting a static token; verified against the
       // same MCP_AUTH_TOKEN / MCP_API_KEYS that guard /mcp.
@@ -301,6 +349,11 @@ if (config.console && store) {
             return undefined;
           }
         : undefined,
+      metrics: metricsSnapshot,
+      auditFeed: () => auditRecent(200),
+      series: getSeries,
+      settings: consoleSettings,
+      health: (active) => healthStatus(config, active),
     }),
   );
 }
@@ -314,9 +367,16 @@ app.use("/mcp", checkOrigin, limiter, authenticate);
 //   DELETE /mcp — session termination
 // ---------------------------------------------------------------------------
 
-app.post("/mcp", async (req: Request, res: Response) => {
+// Integrations that may appear as a `/mcp/<system>` path suffix (enabled only).
+const enabledSystems = new Set(enabledIntegrationNames(config));
+
+async function handleMcpPost(req: Request, res: Response, pathSystem?: string): Promise<void> {
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
-  const identity = (res.locals.identity as KeyIdentity | undefined) ?? LOCAL_IDENTITY;
+  let identity = (res.locals.identity as KeyIdentity | undefined) ?? LOCAL_IDENTITY;
+
+  // `/mcp/<system>` narrows this request to one integration — intersected with
+  // the key's own scope, so the path can only ever restrict, never widen.
+  if (pathSystem) identity = scopeIdentityToSystem(identity, pathSystem);
 
   // Carry the resolved key + session into request-scoped context so the tool
   // dispatch governance guard (server.ts) can enforce scope and emit audit logs.
@@ -369,6 +429,31 @@ app.post("/mcp", async (req: Request, res: Response) => {
     }
   }
   });
+}
+
+// Full aggregate endpoint.
+app.post("/mcp", (req, res) => {
+  handleMcpPost(req, res).catch((err) => {
+    logger.error({ err }, "error handling POST /mcp");
+    if (!res.headersSent) res.status(500).end();
+  });
+});
+
+// Per-system endpoint: `/mcp/<integration>` scopes the session to one system.
+app.post("/mcp/:system", (req, res) => {
+  const system = req.params.system;
+  if (!enabledSystems.has(system)) {
+    res.status(404).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: `Unknown or inactive integration "${system}"` },
+      id: null,
+    });
+    return;
+  }
+  handleMcpPost(req, res, system).catch((err) => {
+    logger.error({ err, system }, "error handling POST /mcp/:system");
+    if (!res.headersSent) res.status(500).end();
+  });
 });
 
 async function handleSessionRequest(req: Request, res: Response): Promise<void> {
@@ -381,19 +466,24 @@ async function handleSessionRequest(req: Request, res: Response): Promise<void> 
   await sessions.get(sessionId)!.transport.handleRequest(req, res);
 }
 
-app.get("/mcp", (req, res) => {
-  handleSessionRequest(req, res).catch((err) => {
-    logger.error({ err }, "error handling GET /mcp");
-    if (!res.headersSent) res.status(500).end();
+// GET (SSE stream) and DELETE (close) carry no tool dispatch and are keyed by
+// session id alone, so the per-system path variants reuse the same handler.
+// Scope is (re)applied on every POST, which is where tools/list and tools/call
+// arrive. The key remains the real security boundary; the path only narrows.
+for (const path of ["/mcp", "/mcp/:system"]) {
+  app.get(path, (req, res) => {
+    handleSessionRequest(req, res).catch((err) => {
+      logger.error({ err }, "error handling GET /mcp");
+      if (!res.headersSent) res.status(500).end();
+    });
   });
-});
-
-app.delete("/mcp", (req, res) => {
-  handleSessionRequest(req, res).catch((err) => {
-    logger.error({ err }, "error handling DELETE /mcp");
-    if (!res.headersSent) res.status(500).end();
+  app.delete(path, (req, res) => {
+    handleSessionRequest(req, res).catch((err) => {
+      logger.error({ err }, "error handling DELETE /mcp");
+      if (!res.headersSent) res.status(500).end();
+    });
   });
-});
+}
 
 // ---------------------------------------------------------------------------
 // Startup / graceful shutdown

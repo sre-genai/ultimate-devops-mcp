@@ -95,7 +95,7 @@ test("a read-only token signs in without write access", async () => {
   const html = await dashboard(jar);
   assert.match(html, /Your API keys/);
   assert.doesNotMatch(html, /Allow <strong>writes/);
-  assert.match(html, /Read-only key/);
+  assert.match(html, /read-only/i);
 });
 
 test("an invalid token is rejected (401)", async () => {

@@ -107,6 +107,14 @@ config:
   # AUTH_OIDC_CLIENT_ID: "udm-console"
   # AUTH_OIDC_REDIRECT_URI: "https://mcp.example.com/console/callback"
   # AUTH_OIDC_ADMIN_GROUPS: "platform-admins"
+  # -- RBAC roles (view / editor / admin) — map identity groups to a role.
+  #    admin  = mint write-capable keys, revoke, full access
+  #    editor = create/revoke read-only keys
+  #    view   = browse only (dashboards, audit, usage, keys)
+  # AUTH_RBAC_ADMIN_GROUPS: "platform-admins"     # (also honors AUTH_OIDC/LDAP_ADMIN_GROUPS)
+  # AUTH_RBAC_EDITOR_GROUPS: "developers"
+  # AUTH_RBAC_VIEWER_GROUPS: "read-only"
+  # AUTH_RBAC_DEFAULT_ROLE: "view"                # role for users in no mapped group
   # -- Key store (where minted keys are persisted). SQLite needs a writable volume;
   #    for HA/multi-replica use postgres or redis (endpoints here, creds in secrets).
   # AUTH_KEY_STORE: "postgres"                        # sqlite | postgres | redis

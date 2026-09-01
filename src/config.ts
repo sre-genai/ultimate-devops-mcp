@@ -309,8 +309,14 @@ export interface LdapConfig {
 export interface ConsoleConfig {
   sessionSecret: string;
   basePath: string;
-  /** Union of OIDC + LDAP admin groups, used to gate write-capable key minting. */
+  /** Groups mapped to the admin role (write-capable key minting). */
   adminGroups: string[];
+  /** Groups mapped to the editor role (create/revoke read-only keys). */
+  editorGroups: string[];
+  /** Groups mapped to the view role (browse only). */
+  viewerGroups: string[];
+  /** Role for authenticated users not in any mapped group. */
+  defaultRole: "view" | "editor" | "admin";
   /** OIDC (SSO) login — optional. */
   oidc?: ConsoleOidcConfig;
   /** LDAP username/password login — optional. */
@@ -939,12 +945,21 @@ export function loadConfig(): AppConfig {
       );
     }
     if (sessionSecret && (consoleOidc || consoleLdap || tokenLogin)) {
+      const rawDefault = env("AUTH_RBAC_DEFAULT_ROLE");
+      const defaultRole = rawDefault === "editor" || rawDefault === "admin" || rawDefault === "view" ? rawDefault : "view";
       consoleConfig = {
         sessionSecret,
         basePath: env("AUTH_CONSOLE_BASE_PATH") ?? "/console",
         adminGroups: Array.from(
-          new Set([...splitList(env("AUTH_OIDC_ADMIN_GROUPS")), ...(consoleLdap?.adminGroups ?? [])]),
+          new Set([
+            ...splitList(env("AUTH_OIDC_ADMIN_GROUPS")),
+            ...splitList(env("AUTH_RBAC_ADMIN_GROUPS")),
+            ...(consoleLdap?.adminGroups ?? []),
+          ]),
         ),
+        editorGroups: splitList(env("AUTH_RBAC_EDITOR_GROUPS")),
+        viewerGroups: splitList(env("AUTH_RBAC_VIEWER_GROUPS")),
+        defaultRole,
         oidc: consoleOidc,
         ldap: consoleLdap,
         tokenLogin,

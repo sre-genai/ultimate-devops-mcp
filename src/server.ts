@@ -35,7 +35,7 @@ import { registerSonarQube } from "./integrations/sonarqube.js";
 import { registerInvestigate } from "./tools/investigate.js";
 
 export const SERVER_NAME = "ultimate-devops-mcp";
-export const SERVER_VERSION = "1.4.0";
+export const SERVER_VERSION = "1.5.0";
 
 type Registrar = (server: McpServer, config: AppConfig) => boolean;
 
@@ -69,6 +69,9 @@ const REGISTRARS: Record<string, Registrar> = {
   trivy: registerTrivy,
   sonarqube: registerSonarQube,
 };
+
+/** Names of every integration this build supports (for status/UX display). */
+export const INTEGRATION_NAMES = Object.keys(REGISTRARS);
 
 /**
  * Governance interceptor: wrap `server.registerTool` so every tool handler is
@@ -119,6 +122,30 @@ function installGovernance(server: McpServer, config: AppConfig): void {
 }
 
 /**
+ * Scope-filter `tools/list`: the SDK's built-in list handler enumerates every
+ * registered tool regardless of the caller's key, so a scoped key would still
+ * *see* tools it may not call. Intercept the handler McpServer installs on the
+ * low-level server and drop tools the current key's allowlist rejects — the same
+ * `keyAllowsTool` check the call-time guard uses, so list and call agree.
+ */
+function installListFilter(server: McpServer): void {
+  const low = server.server as unknown as {
+    setRequestHandler: (schema: any, handler: any) => void;
+  };
+  const originalSet = low.setRequestHandler.bind(low);
+  low.setRequestHandler = (schema: any, handler: any) => {
+    if (schema?.shape?.method?.value !== "tools/list") return originalSet(schema, handler);
+    const filtered = async (req: unknown, extra: unknown) => {
+      const res = (await handler(req, extra)) as { tools?: { name: string }[] };
+      const key = currentContext()?.key ?? LOCAL_IDENTITY;
+      if (Array.isArray(res?.tools)) res.tools = res.tools.filter((t) => keyAllowsTool(key, t.name));
+      return res;
+    };
+    return originalSet(schema, filtered);
+  };
+}
+
+/**
  * Builds an McpServer instance for one client session. Tool handlers reference
  * module-level lazy clients, so DB pools / producers / browsers are shared
  * across sessions and created only on first use.
@@ -128,6 +155,7 @@ export async function createMcpServer(
 ): Promise<{ server: McpServer; enabled: string[] }> {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
   installGovernance(server, config);
+  installListFilter(server);
 
   const enabled: string[] = [];
   for (const [name, register] of Object.entries(REGISTRARS)) {

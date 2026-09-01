@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.5.0 — Control-plane console, per-system routing, RBAC
+
+Turns the self-service console into a control plane and makes scoping first-class,
+end to end. All additive — existing endpoints and keys behave unchanged.
+
+### Added
+- **Per-system endpoint `/mcp/<integration>`** — a client can point at
+  `…/mcp/postgres` (or `/redis`, `/prometheus`, …) and see only that system's
+  tools. The path scope is intersected with the key's own scope, so it can only
+  ever narrow access, never widen it; `/mcp` remains the full aggregate. Unknown or
+  inactive systems return 404; auth covers the subpaths (no bypass).
+- **Scoped API keys** — a key can be limited to specific integrations at mint time.
+  Enforcement is by tool-name prefix (`postgres_*`) and now applies to **`tools/list`
+  as well as `tools/call`**, so a scoped connection genuinely presents as a
+  single-system server rather than merely blocking calls.
+- **RBAC roles (view / editor / admin)** resolved from directory groups with defaults
+  set via Helm (`AUTH_RBAC_EDITOR_GROUPS`, `AUTH_RBAC_VIEWER_GROUPS`,
+  `AUTH_RBAC_DEFAULT_ROLE`; admin via `AUTH_RBAC_ADMIN_GROUPS`). Read-only members can
+  mint read-only keys; editors and admins can mint write-capable keys.
+- **Control-plane pages** — Overview, Audit Logs, Usage & Metrics, and Settings, with
+  **live TCP health probes** per integration (up / down / unknown), a request-trend
+  sparkline, and an in-memory audit feed.
+- **"Connect a client" guidance** — the console now shows the live endpoint, a ready
+  Claude Code CLI command, an MCP client config block, and a smoke test; each active
+  system card opens a drawer with its own per-system connect config.
+- **Brand icons** for connected systems (Simple Icons, embedded — no external fetch).
+
+### Changed
+- Dashboard "Connected systems" lists only active integrations, and the systems stat
+  drops the "N of 28 / % of total" framing (28 is a catalog, not a target).
+- Slack now has a health-probe target (`slack.com:443`) instead of always "unknown".
+
 ## 1.4.0 — LDAP login, first-run bootstrap, token login
 
 Rounds out the self-service console's auth: it now logs users in via OIDC **and/or**
