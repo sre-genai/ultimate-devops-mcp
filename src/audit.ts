@@ -41,9 +41,14 @@ export function currentContext(): RequestContext | undefined {
   return store.getStore();
 }
 
-/** A key may call a tool when it has no allowlist, or the tool is on it. */
+/**
+ * A key may call a tool when it has no allowlist, the tool is listed exactly, or
+ * a wildcard entry prefix-matches it. `postgres_*` allows every Postgres tool;
+ * bare tool names (as MCP_API_KEYS uses) still match exactly.
+ */
 export function keyAllowsTool(key: KeyIdentity, tool: string): boolean {
-  return key.tools === undefined || key.tools.includes(tool);
+  if (key.tools === undefined) return true;
+  return key.tools.some((t) => t === tool || (t.endsWith("*") && tool.startsWith(t.slice(0, -1))));
 }
 
 export type AuditOutcome = "allowed" | "denied" | "dry-run" | "error";
@@ -61,13 +66,28 @@ export interface AuditEvent {
   durationMs: number;
 }
 
+export interface AuditRecord extends AuditEvent {
+  ts: string;
+}
+
+// In-memory ring of recent audit records, so the console can show a live feed
+// without a store. Bounded; lost on restart (it's a recent-activity view, not
+// the system of record — ship stdout to your log pipeline for durable audit).
+const RING_MAX = 500;
+const ring: AuditRecord[] = [];
+
+/** Most-recent-first slice of recent audit records (default 200, max 500). */
+export function auditRecent(limit = 200): AuditRecord[] {
+  return ring.slice(-Math.min(limit, RING_MAX)).reverse();
+}
+
 /**
  * Emit one structured audit record per tool invocation. Deliberately logs no
  * tool arguments and no secrets — only who called what, when, and the outcome.
  */
 export function audit(event: AuditEvent): void {
-  logger.info(
-    { audit: { ...event, ts: new Date().toISOString() } },
-    `tool ${event.tool} ${event.outcome}`,
-  );
+  const record: AuditRecord = { ...event, ts: new Date().toISOString() };
+  ring.push(record);
+  if (ring.length > RING_MAX) ring.shift();
+  logger.info({ audit: record }, `tool ${event.tool} ${event.outcome}`);
 }

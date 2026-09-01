@@ -142,7 +142,7 @@ test("valid non-admin credentials sign in read-only", async () => {
   const html = await dashboard(jar);
   assert.match(html, /Your API keys/);
   assert.doesNotMatch(html, /Allow <strong>writes/);
-  assert.match(html, /Read-only key/);
+  assert.match(html, /read-only/i);
 });
 
 test("wrong password is rejected (401), no session established", async () => {

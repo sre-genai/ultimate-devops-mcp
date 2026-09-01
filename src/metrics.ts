@@ -52,6 +52,55 @@ function escapeLabel(v: string): string {
   return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
 }
 
+export interface ToolMetric {
+  tool: string;
+  calls: number;
+  errors: number;
+  avgMs: number;
+}
+export interface MetricsSnapshot {
+  totalCalls: number;
+  totalErrors: number;
+  uptimeSeconds: number;
+  tools: ToolMetric[];
+}
+
+// ---- time series (for the console's usage sparkline) ----
+export interface SeriesPoint { t: number; calls: number; errors: number; }
+const SERIES_MAX = 120; // ~30 min at 15s
+const series: SeriesPoint[] = [];
+let sampleTimer: ReturnType<typeof setInterval> | undefined;
+
+/** Sample per-interval call/error deltas so the console can chart trends. */
+export function startSampler(intervalMs = 15_000): void {
+  if (sampleTimer) return;
+  let lastCalls = 0;
+  let lastErrors = 0;
+  sampleTimer = setInterval(() => {
+    series.push({ t: Date.now(), calls: totalCalls - lastCalls, errors: totalErrors - lastErrors });
+    lastCalls = totalCalls;
+    lastErrors = totalErrors;
+    if (series.length > SERIES_MAX) series.shift();
+  }, intervalMs);
+  sampleTimer.unref?.();
+}
+export function getSeries(): SeriesPoint[] {
+  return series.slice();
+}
+
+/** Structured metrics for the console (the same data /metrics exposes). */
+export function snapshot(): MetricsSnapshot {
+  const list: ToolMetric[] = [...tools.entries()]
+    .map(([tool, s]) => ({ tool, calls: s.calls, errors: s.errors, avgMs: s.calls ? (s.sumSeconds / s.calls) * 1000 : 0 }))
+    .sort((a, b) => b.calls - a.calls);
+  return {
+    totalCalls,
+    totalErrors,
+    uptimeSeconds: (Date.now() - startedAt) / 1000,
+    tools: list,
+  };
+}
+
 /** Renders all metrics in the Prometheus text exposition format (v0.0.4). */
 export function renderPrometheus(): string {
   const lines: string[] = [];
